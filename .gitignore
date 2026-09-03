@@ -1,16 +1,19 @@
 # 浏览器配置文件（含 Cookies / 登录凭据 / 浏览历史等敏感数据）
-chrome_cdp_profile/
-chrome_headless_profile/
+chrome_*profile*/
 
 # 数据库
 *.db
+*.rar
 
 # 运行时缓存
 __pycache__/
 *.pyc
 
 # 备份文件
-*.bak
+*.bak*
+
+# 调试/探针数据
+data/
 
 # 误产生的空文件 / 垃圾文件
 13.0

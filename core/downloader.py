@@ -60,8 +60,13 @@ def refresh_video_url(page_url, progress_cb=None):
     return data.get("video_url", ""), cookie_items
 
 
-def download_once(url, page_url, path, session, cookie_items=None, progress_cb=None):
-    """单次下载（含断点续传）。progress_cb(percent, status, message)。"""
+def download_once(url, page_url, path, session, cookie_items=None,
+                  progress_cb=None, cancel_check=None):
+    """单次下载（含断点续传）。progress_cb(percent, status, message)。
+
+    cancel_check: 可选回调，返回 True 表示用户请求取消，
+    会在写入前抛 RuntimeError("用户取消下载")。
+    """
     # Start a fresh file for the first request. If a partial .part exists,
     # resume it with Range; this is useful when the connection drops.
     part = path + ".part"
@@ -128,6 +133,10 @@ def download_once(url, page_url, path, session, cookie_items=None, progress_cb=N
     mode = "ab" if append else "wb"
     with open(part, mode) as f:
         for chunk in r.iter_content(chunk_size=1024 * 512):
+            # 取消检查：在写入前检查，避免继续写入已取消的任务。
+            if cancel_check and cancel_check():
+                r.close()
+                raise RuntimeError("用户取消下载")
             if not chunk:
                 continue
             f.write(chunk)
@@ -152,12 +161,14 @@ def _get_work(db, work_id):
 
 
 def run_download(work_id, video_url, output_dir, db,
-                 progress_cb=None, finished_cb=None, failed_cb=None):
+                 progress_cb=None, finished_cb=None, failed_cb=None,
+                 cancel_check=None):
     """下载主循环。对应原 DownloadWorker.run()。
 
     progress_cb(percent, status, message)
     finished_cb(path)
     failed_cb(error)
+    cancel_check: 可选回调，返回 True 表示用户请求取消。
     """
     try:
         import requests
@@ -201,11 +212,15 @@ def run_download(work_id, video_url, output_dir, db,
         cookie_items = []
 
         for attempt in range(1, 4):
+            # 每次 attempt 开始前检查取消：已取消则不再发起新请求。
+            if cancel_check and cancel_check():
+                raise RuntimeError("用户取消下载")
             url = urls[-1]
             if progress_cb:
                 progress_cb(0, "连接中", f"第 {attempt}/3 次")
             try:
-                download_once(url, page_url, path, session, cookie_items, progress_cb)
+                download_once(url, page_url, path, session, cookie_items,
+                              progress_cb, cancel_check)
                 db.update_download(work_id, "已下载", path)
                 if progress_cb:
                     progress_cb(100, "已下载", path)
@@ -214,12 +229,19 @@ def run_download(work_id, video_url, output_dir, db,
                 return video_url
             except Exception as e:
                 last_error = e
+                # 用户取消：立即抛出，不进入 refresh，也不重试。
+                if str(e) == "用户取消下载":
+                    raise
                 # A signed TikTok media URL can expire. Refresh the page
                 # once and retry with the newly extracted URL.
                 if (not refreshed and page_url and
                         any(x in str(e) for x in ("403", "404", "410", "过期"))):
                     refreshed = True
                     fresh, cookie_items = refresh_video_url(page_url, progress_cb)
+                    # refresh 可能耗时较长，返回后再次检查取消，
+                    # 避免用户已取消却继续下一次下载。
+                    if cancel_check and cancel_check():
+                        raise RuntimeError("用户取消下载")
                     if fresh:
                         urls.append(fresh)
                         video_url = fresh

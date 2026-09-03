@@ -1,43 +1,78 @@
-"""下载 Worker（Qt 线程层）。
+"""下载 Worker。
 
-DownloadWorker(QThread) 负责：
-- 接收任务参数
-- 调用 core.downloader.run_download 执行业务逻辑
-- 通过 Qt Signal 向 GUI 报告 progress / finished_ok / failed
-
-此模块是 core 与 GUI 之间的桥接层，core/downloader.py 不依赖 PySide6。
-接口与原 TK_Studio_V1_6_4.py 中的 DownloadWorker 完全一致。
+负责：
+1. 在线程中执行 core.downloader.run_download()
+2. 将下载进度转发为 Qt Signal
+3. 提供协作式取消
 """
+
 from PySide6.QtCore import QThread, Signal
 
 from core.downloader import run_download
 
 
 class DownloadWorker(QThread):
-    """TikTok video downloader.
+    """单个作品下载线程。
 
-    Uses the parsed video URL first, with Chrome-like headers, retries and
-    Range resume. If the signed URL has expired, it refreshes the TikTok page
-    in the bundled headless Chrome profile and retries with the fresh URL.
+    TaskManager 负责：
+    - 队列
+    - 并发限制
+    - Worker 生命周期
+    - 取消/关闭
+
+    DownloadWorker 只负责执行一次下载。
     """
+
     progress = Signal(int, str, str)
     finished_ok = Signal(str)
     failed = Signal(str)
 
     def __init__(self, work_id, video_url, output_dir, db):
         super().__init__()
+
         self.work_id = work_id
         self.video_url = video_url
         self.output_dir = output_dir
         self.db = db
 
-    def run(self):
-        self.video_url = run_download(
-            self.work_id,
-            self.video_url,
-            self.output_dir,
-            self.db,
-            progress_cb=lambda p, s, m: self.progress.emit(p, s, m),
-            finished_cb=lambda path: self.finished_ok.emit(path),
-            failed_cb=lambda err: self.failed.emit(err),
+        self._cancel_requested = False
+
+    def cancel(self):
+        """请求取消。
+
+        不强杀线程，由 downloader 在请求/写入检查点主动退出。
+        """
+        self._cancel_requested = True
+
+    def is_cancel_requested(self):
+        return self._cancel_requested
+
+    def _progress(self, percent, status, message):
+        self.progress.emit(
+            int(percent),
+            str(status or ""),
+            str(message or ""),
         )
+
+    def _finished(self, path):
+        self.finished_ok.emit(str(path))
+
+    def _failed(self, error):
+        self.failed.emit(str(error))
+
+    def run(self):
+        try:
+            run_download(
+                self.work_id,
+                self.video_url,
+                self.output_dir,
+                self.db,
+                progress_cb=self._progress,
+                finished_cb=self._finished,
+                failed_cb=self._failed,
+                cancel_check=self.is_cancel_requested,
+            )
+        except Exception as e:
+            # run_download 本身已经负责 failed_cb；
+            # 这里只兜底处理线程层异常，避免异常直接逃出 QThread。
+            self.failed.emit(str(e))
