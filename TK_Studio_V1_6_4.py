@@ -1,12 +1,6 @@
 import sys
 import os
-import sqlite3
-import threading
-import subprocess
-import json
-from datetime import datetime
-from urllib.parse import urlparse, unquote
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QStackedWidget, QLabel, QPushButton,
@@ -14,690 +8,99 @@ from PySide6.QtWidgets import (
     QProgressBar, QFileDialog, QTextEdit, QFrame
 )
 
+from core.db import Database, get_latest_work_id
+from core.chrome_bridge import chrome_render_with_cookies
+from core.tiktok_service import parse_url
+from workers.download_worker import DownloadWorker
+
 APP_STYLE = """
-QMainWindow { background: #f4f7fb; }
-QLabel { color: #202938; }
-#sidebar { background: #1677ff; }
-#brand { color: white; font-size: 22px; font-weight: 700; padding: 18px 10px; }
-QListWidget { background: #1677ff; color: white; border: none; font-size: 16px; }
-QListWidget::item { padding: 14px 12px; border-radius: 6px; margin: 2px 6px; }
-QListWidget::item:selected { background: #ff5be7; }
-#title { font-size: 22px; font-weight: 700; }
-QPushButton { background: #1677ff; color: white; border: none; border-radius: 5px; padding: 9px 16px; font-weight: 600; }
-QPushButton:hover { background: #0d63d8; }
-QPushButton#green { background: #10b981; }
-QPushButton#pink { background: #ec25d6; }
-QLineEdit, QTextEdit { background: white; border: 1px solid #cfd7e3; border-radius: 5px; padding: 8px; }
-QTableWidget { background: white; border: 1px solid #d7dee8; gridline-color: #e5eaf0; }
-QHeaderView::section { background: #e9f1ff; padding: 8px; border: none; font-weight: 600; }
-QProgressBar { background: #e8edf3; border: none; border-radius: 5px; text-align: center; }
-QProgressBar::chunk { background: #1677ff; border-radius: 5px; }
-#card { background: white; border: 1px solid #e0e6ef; border-radius: 8px; padding: 12px; }
+/* ===== Base ===== */
+QMainWindow { background: #f8fafc; }
+QWidget { color: #0f172a; font-size: 14px; }
+QLabel { color: #0f172a; }
+
+/* ===== Sidebar ===== */
+#sidebar { background: #1e293b; }
+#brand { color: #f8fafc; font-size: 20px; font-weight: 700; padding: 20px 10px 14px 10px; letter-spacing: 0.5px; }
+QListWidget { background: #1e293b; color: #cbd5e1; border: none; font-size: 14px; outline: none; }
+QListWidget::item { padding: 12px 14px; border-radius: 8px; margin: 2px 8px; color: #cbd5e1; }
+QListWidget::item:hover { background: #334155; color: #f8fafc; }
+QListWidget::item:selected { background: #2563eb; color: #ffffff; }
+QListWidget::item:selected:hover { background: #1d4ed8; }
+
+/* ===== Title ===== */
+#title { font-size: 20px; font-weight: 700; color: #0f172a; }
+
+/* ===== Buttons ===== */
+QPushButton {
+    background: #ffffff; color: #2563eb;
+    border: 1px solid #cbd5e1; border-radius: 8px;
+    padding: 8px 16px; font-weight: 600;
+}
+QPushButton:hover { background: #eff6ff; border-color: #2563eb; }
+QPushButton:pressed { background: #dbeafe; }
+QPushButton:disabled { color: #94a3b8; border-color: #e2e8f0; background: #f1f5f9; }
+QPushButton#green {
+    background: #2563eb; color: #ffffff; border: 1px solid #2563eb;
+}
+QPushButton#green:hover { background: #1d4ed8; border-color: #1d4ed8; }
+QPushButton#green:pressed { background: #1e40af; }
+QPushButton#green:disabled { background: #93c5fd; border-color: #93c5fd; color: #ffffff; }
+QPushButton#pink {
+    background: #16a34a; color: #ffffff; border: 1px solid #16a34a;
+}
+QPushButton#pink:hover { background: #15803d; border-color: #15803d; }
+QPushButton#pink:pressed { background: #166534; }
+QPushButton#pink:disabled { background: #86efac; border-color: #86efac; color: #ffffff; }
+
+/* ===== Inputs ===== */
+QLineEdit, QTextEdit {
+    background: #ffffff; color: #0f172a;
+    border: 1px solid #e2e8f0; border-radius: 8px;
+    padding: 8px 10px; selection-background-color: #dbeafe;
+}
+QLineEdit:focus, QTextEdit:focus { border: 1px solid #2563eb; }
+QLineEdit:disabled, QTextEdit:disabled { background: #f8fafc; color: #94a3b8; }
+
+/* ===== Card ===== */
+#card {
+    background: #ffffff; border: 1px solid #e2e8f0;
+    border-radius: 10px; padding: 16px;
+}
+
+/* ===== Table ===== */
+QTableWidget {
+    background: #ffffff; alternate-background-color: #f8fafc;
+    border: 1px solid #e2e8f0; border-radius: 8px;
+    gridline-color: #eef2f7; selection-background-color: #dbeafe;
+    selection-color: #0f172a; outline: none;
+}
+QTableWidget::item { padding: 6px 8px; }
+QTableWidget::item:hover { background: #f1f5f9; }
+QHeaderView::section {
+    background: #f1f5f9; color: #334155;
+    padding: 10px 8px; border: none;
+    border-bottom: 1px solid #e2e8f0; font-weight: 600;
+}
+QTableCornerButton::section { background: #f1f5f9; border: none; }
+
+/* ===== ProgressBar ===== */
+QProgressBar {
+    background: #e2e8f0; border: none; border-radius: 3px;
+    text-align: center; height: 6px; color: #64748b; font-size: 11px;
+}
+QProgressBar::chunk { background: #2563eb; border-radius: 3px; }
+
+/* ===== ScrollBar ===== */
+QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }
+QScrollBar::handle:vertical { background: #cbd5e1; border-radius: 4px; min-height: 30px; }
+QScrollBar::handle:vertical:hover { background: #94a3b8; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar:horizontal { background: transparent; height: 8px; margin: 0; }
+QScrollBar::handle:horizontal { background: #cbd5e1; border-radius: 4px; min-width: 30px; }
+QScrollBar::handle:horizontal:hover { background: #94a3b8; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 """
-
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tk_studio.db")
-
-
-class Database:
-    def __init__(self, path=DB_FILE):
-        self.path = path
-        self.init_db()
-
-    def connect(self):
-        return sqlite3.connect(self.path)
-
-    def init_db(self):
-        with self.connect() as con:
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS works (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    video_id TEXT UNIQUE,
-                    author TEXT,
-                    title TEXT,
-                    url TEXT,
-                    video_url TEXT,
-                    cover_url TEXT,
-                    duration TEXT,
-                    resolution TEXT,
-                    download_status TEXT DEFAULT '未下载',
-                    local_path TEXT,
-                    created_at TEXT,
-                    updated_at TEXT
-                )
-            """)
-            con.commit()
-
-    def add_work(self, data):
-        now = datetime.now().isoformat(timespec="seconds")
-        with self.connect() as con:
-            con.execute("""
-                INSERT INTO works
-                (video_id, author, title, url, video_url, cover_url,
-                 duration, resolution, download_status, local_path,
-                 created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, '未下载', '', ?, ?)
-                ON CONFLICT(video_id) DO UPDATE SET
-                    author=excluded.author,
-                    title=excluded.title,
-                    url=excluded.url,
-                    video_url=excluded.video_url,
-                    cover_url=excluded.cover_url,
-                    duration=excluded.duration,
-                    resolution=excluded.resolution,
-                    updated_at=excluded.updated_at
-            """, (
-                data.get("video_id", ""),
-                data.get("author", ""),
-                data.get("title", ""),
-                data.get("url", ""),
-                data.get("video_url", ""),
-                data.get("cover_url", ""),
-                data.get("duration", ""),
-                data.get("resolution", ""),
-                now, now
-            ))
-            con.commit()
-            row = con.execute(
-                "SELECT id FROM works WHERE video_id=?",
-                (data.get("video_id", ""),)
-            ).fetchone()
-            return row[0] if row else None
-
-    def list_works(self, keyword=""):
-        with self.connect() as con:
-            if keyword:
-                rows = con.execute("""
-                    SELECT id, author, title, url, duration, resolution,
-                           download_status, video_id
-                    FROM works
-                    WHERE author LIKE ? OR title LIKE ? OR video_id LIKE ?
-                    ORDER BY id DESC
-                """, (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%")).fetchall()
-            else:
-                rows = con.execute("""
-                    SELECT id, author, title, url, duration, resolution,
-                           download_status, video_id
-                    FROM works ORDER BY id DESC
-                """).fetchall()
-        return rows
-
-    def get_work(self, work_id):
-        with self.connect() as con:
-            return con.execute(
-                "SELECT * FROM works WHERE id=?", (work_id,)
-            ).fetchone()
-
-    def update_download(self, work_id, status, local_path=""):
-        now = datetime.now().isoformat(timespec="seconds")
-        with self.connect() as con:
-            con.execute("""
-                UPDATE works
-                SET download_status=?, local_path=?, updated_at=?
-                WHERE id=?
-            """, (status, local_path, now, work_id))
-            con.commit()
-
-
-class DownloadWorker(QThread):
-    """TikTok video downloader.
-
-    Uses the parsed video URL first, with Chrome-like headers, retries and
-    Range resume. If the signed URL has expired, it refreshes the TikTok page
-    in the bundled headless Chrome profile and retries with the fresh URL.
-    """
-    progress = Signal(int, str, str)
-    finished_ok = Signal(str)
-    failed = Signal(str)
-
-    def __init__(self, work_id, video_url, output_dir, db):
-        super().__init__()
-        self.work_id = work_id
-        self.video_url = video_url
-        self.output_dir = output_dir
-        self.db = db
-
-    @staticmethod
-    def _safe_name(title, video_id):
-        safe = "".join(c for c in (title or video_id or "tiktok_video")
-                       if c not in '<>:"/\\|?*').strip()
-        return (safe or video_id or "tiktok_video")[:100]
-
-    def _get_work(self):
-        with self.db.connect() as con:
-            return con.execute(
-                "SELECT video_id, author, title, url, video_url FROM works WHERE id=?",
-                (self.work_id,)
-            ).fetchone()
-
-    def _headers(self, page_url, range_header=None):
-        h = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/151.0.0.0 Safari/537.36"
-            ),
-            "Referer": page_url or "https://www.tiktok.com/",
-            "Origin": "https://www.tiktok.com",
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "identity",
-            "Connection": "keep-alive",
-        }
-        if range_header:
-            h["Range"] = range_header
-        return h
-
-    def _fresh_video_url(self, page_url):
-        if not page_url:
-            return "", []
-        self.progress.emit(
-            0, "刷新视频地址",
-            "正在用独立 Chrome 重新获取页面和会话 Cookie"
-        )
-        rendered, cookie_items = chrome_render_with_cookies(page_url)
-        if not rendered:
-            return "", cookie_items
-        data = extract_tiktok_data(rendered)
-        return data.get("video_url", ""), cookie_items
-
-
-    def _download_once(self, url, page_url, path, session, cookie_items=None):
-        # Start a fresh file for the first request. If a partial .part exists,
-        # resume it with Range; this is useful when the connection drops.
-        part = path + ".part"
-        existing = os.path.getsize(part) if os.path.exists(part) else 0
-        range_header = f"bytes={existing}-" if existing else None
-        headers = self._headers(page_url, range_header)
-
-        if cookie_items:
-            # 使用 Chrome CDP 获取的会话 Cookie，不读取 Cookies SQLite。
-            session.cookies.clear()
-            cookie_pairs = []
-            for item in cookie_items:
-                try:
-                    name = item.get("name", "")
-                    value = item.get("value", "")
-                    if name:
-                        cookie_pairs.append(f"{name}={value}")
-                        session.cookies.set(name, value, domain=item.get("domain") or None, path="/")
-                except Exception:
-                    pass
-            if cookie_pairs:
-                headers["Cookie"] = "; ".join(cookie_pairs)
-
-        # TikTok CDN 对 Range/浏览器请求特征更敏感
-        headers["Sec-Fetch-Dest"] = "video"
-        headers["Sec-Fetch-Mode"] = "cors"
-        headers["Sec-Fetch-Site"] = "cross-site"
-
-        r = session.get(url, headers=headers, stream=True,
-                        timeout=(20, 90), allow_redirects=True)
-        status = r.status_code
-        content_type = (r.headers.get("content-type") or "").lower()
-
-        if status in (401, 403, 404, 410):
-            r.close()
-            raise RuntimeError(f"HTTP {status}：视频地址可能已过期或当前请求被拒绝")
-        if status >= 400:
-            r.close()
-            raise RuntimeError(f"HTTP {status}")
-        if "text/html" in content_type:
-            r.close()
-            raise RuntimeError("服务器返回网页而不是视频文件，视频地址可能已过期")
-
-        # If server ignored Range, restart the partial file rather than
-        # appending the whole response to it.
-        append = existing > 0 and status == 206
-        if not append:
-            existing = 0
-
-        total = 0
-        if status == 206:
-            cr = r.headers.get("content-range", "")
-            try:
-                total = int(cr.rsplit("/", 1)[1])
-            except Exception:
-                total = 0
-        if not total:
-            try:
-                total = int(r.headers.get("content-length", "0") or 0) + existing
-            except Exception:
-                total = 0
-
-        done = existing
-        mode = "ab" if append else "wb"
-        with open(part, mode) as f:
-            for chunk in r.iter_content(chunk_size=1024 * 512):
-                if not chunk:
-                    continue
-                f.write(chunk)
-                done += len(chunk)
-                percent = min(99, int(done * 100 / total)) if total else 0
-                self.progress.emit(percent, "下载中", f"{done / 1024 / 1024:.1f} MB")
-        r.close()
-
-        if not os.path.exists(part) or os.path.getsize(part) < 1024:
-            raise RuntimeError("下载文件为空或文件异常")
-        os.replace(part, path)
-
-    def run(self):
-        try:
-            import requests
-            from requests.adapters import HTTPAdapter
-            from urllib3.util.retry import Retry
-
-            if not self.video_url:
-                raise RuntimeError("没有视频地址，请重新解析作品。")
-
-            os.makedirs(self.output_dir, exist_ok=True)
-            row = self._get_work()
-            if not row:
-                raise RuntimeError("找不到作品记录。")
-
-            video_id, author, title, page_url, stored_video_url = row
-            filename = self._safe_name(title, video_id) + ".mp4"
-            path = os.path.join(self.output_dir, filename)
-            part = path + ".part"
-
-            session = requests.Session()
-            retry = Retry(
-                total=2, connect=2, read=2, status=2,
-                backoff_factor=1,
-                status_forcelist=(429, 500, 502, 503, 504),
-                allowed_methods=frozenset(["GET"]),
-                raise_on_status=False,
-            )
-            session.mount("http://", HTTPAdapter(max_retries=retry))
-            session.mount("https://", HTTPAdapter(max_retries=retry))
-
-            self.db.update_download(self.work_id, "下载中")
-            self.progress.emit(0, "准备下载", "")
-
-            # 先使用现有地址尝试；如果服务器拒绝，再通过 Chrome CDP
-            # 获取新的签名地址和 Cookie。这样完全绕开 Chrome Cookies
-            # SQLite 文件的锁定/权限问题。
-            last_error = None
-            urls = [self.video_url]
-            refreshed = False
-            cookie_items = []
-
-            for attempt in range(1, 4):
-                url = urls[-1]
-                self.progress.emit(0, "连接中", f"第 {attempt}/3 次")
-                try:
-                    self._download_once(
-                        url, page_url, path, session, cookie_items
-                    )
-                    self.db.update_download(self.work_id, "已下载", path)
-                    self.progress.emit(100, "已下载", path)
-                    self.finished_ok.emit(path)
-                    return
-                except Exception as e:
-                    last_error = e
-                    # A signed TikTok media URL can expire. Refresh the page
-                    # once and retry with the newly extracted URL.
-                    if (not refreshed and page_url and
-                            any(x in str(e) for x in ("403", "404", "410", "过期"))):
-                        refreshed = True
-                        fresh, cookie_items = self._fresh_video_url(page_url)
-                        if fresh:
-                            urls.append(fresh)
-                            self.video_url = fresh
-                            self.db.add_work({
-                                "video_id": video_id,
-                                "author": author,
-                                "title": title,
-                                "url": page_url,
-                                "video_url": fresh,
-                                "cover_url": "",
-                                "duration": "",
-                                "resolution": "",
-                            })
-                            self.progress.emit(
-                                0, "已刷新地址",
-                                "已取得 Chrome 会话，重新尝试下载"
-                            )
-                            continue
-                    self.progress.emit(0, "重试", str(e))
-
-            raise RuntimeError(f"下载失败：{last_error}")
-
-        except Exception as e:
-            try:
-                self.db.update_download(self.work_id, "下载失败")
-            except Exception:
-                pass
-            self.failed.emit(str(e))
-
-
-def get_latest_work_id(db):
-    rows = db.list_works()
-    return rows[0][0] if rows else None
-
-def _clean_tiktok_value(value):
-    if not value:
-        return ""
-    value = unquote(value)
-    value = value.replace("\\u002F", "/").replace("\\/", "/")
-    value = value.replace("&amp;", "&")
-    try:
-        value = bytes(value, "utf-8").decode("unicode_escape")
-    except Exception:
-        pass
-    return value.strip()
-
-
-def extract_tiktok_data(html):
-    """从普通 HTML、meta 标签和 TikTok 页面内嵌 JSON 尽可能提取信息。"""
-    import re
-    from html import unescape
-
-    result = {
-        "author": "",
-        "title": "",
-        "image": "",
-        "video_url": "",
-        "duration": "",
-        "resolution": ""
-    }
-
-    # meta 标签属性顺序并不固定，所以不再要求 property 必须出现在 content 前面。
-    meta_pattern = re.compile(r"<meta\b[^>]*>", re.I | re.S)
-    attr_pattern = re.compile(
-        r'([:\w-]+)\s*=\s*["\'](.*?)["\']',
-        re.I | re.S
-    )
-
-    for tag in meta_pattern.findall(html):
-        attrs = {}
-        for k, v in attr_pattern.findall(tag):
-            attrs[k.lower()] = unescape(v)
-
-        prop = attrs.get("property", "").lower()
-        name = attrs.get("name", "").lower()
-        content = attrs.get("content", "").strip()
-
-        if prop in ("og:title", "twitter:title") or name == "twitter:title":
-            if not result["title"]:
-                result["title"] = content
-
-        elif prop in ("og:image", "og:image:url", "twitter:image") or name == "twitter:image":
-            if not result["image"]:
-                result["image"] = content
-
-        elif prop.startswith("og:video") or name in ("twitter:player:stream", "twitter:player"):
-            if not result["video_url"]:
-                result["video_url"] = content
-
-    # TikTok 内嵌 JSON 常见字段。
-    keys = {
-        "author": ["uniqueId", "unique_id", "authorName"],
-        "title": ["desc", "description"],
-        "image": ["cover", "originCover", "dynamicCover"],
-        "video_url": ["playAddr", "playApi", "downloadAddr"],
-    }
-
-    def find_json_string(key):
-        patterns = [
-            rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"',
-            rf"'{re.escape(key)}'\s*:\s*'((?:\\.|[^'\\])*)'",
-        ]
-        for pat in patterns:
-            m = re.search(pat, html, re.I | re.S)
-            if m:
-                return _clean_tiktok_value(m.group(1))
-        return ""
-
-    for key in keys["author"]:
-        if not result["author"]:
-            result["author"] = find_json_string(key)
-
-    for key in keys["title"]:
-        if not result["title"]:
-            result["title"] = find_json_string(key)
-
-    for key in keys["image"]:
-        if not result["image"]:
-            result["image"] = find_json_string(key)
-
-    for key in keys["video_url"]:
-        if not result["video_url"]:
-            result["video_url"] = find_json_string(key)
-
-    # 从 JSON 中补充 duration / width / height。
-    for key in ("duration",):
-        if not result["duration"]:
-            m = re.search(rf'"{key}"\s*:\s*(\d+(?:\.\d+)?)', html, re.I)
-            if m:
-                result["duration"] = m.group(1)
-
-    if not result["resolution"]:
-        wm = re.search(r'"width"\s*:\s*(\d+)', html, re.I)
-        hm = re.search(r'"height"\s*:\s*(\d+)', html, re.I)
-        if wm and hm:
-            result["resolution"] = f"{wm.group(1)}x{hm.group(1)}"
-
-    return {k: _clean_tiktok_value(v) for k, v in result.items()}
-
-
-def _find_chrome():
-    candidates = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-    ]
-    return next((x for x in candidates if os.path.exists(x)), None)
-
-
-def load_with_chrome(url, log_callback=None):
-    """用本机 Chrome 的 headless --dump-dom 获取 JS 渲染后的 DOM。"""
-    chrome = _find_chrome()
-    if not chrome:
-        return ""
-
-    if log_callback:
-        log_callback("使用本机 Chrome 渲染页面……")
-
-    profile_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "chrome_headless_profile"
-    )
-    os.makedirs(profile_dir, exist_ok=True)
-
-    cmd = [
-        chrome,
-        "--headless=new",
-        "--disable-gpu",
-        "--disable-extensions",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-background-networking",
-        f"--user-data-dir={profile_dir}",
-        "--dump-dom",
-        url
-    ]
-
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            encoding="utf-8", errors="ignore", timeout=45
-        )
-        if result.returncode != 0 and log_callback:
-            log_callback(f"Chrome 返回码：{result.returncode}")
-        return result.stdout or ""
-    except subprocess.TimeoutExpired:
-        if log_callback:
-            log_callback("⚠️ Chrome 渲染超时。")
-        return ""
-    except Exception as e:
-        if log_callback:
-            log_callback(f"⚠️ Chrome 渲染失败：{e}")
-        return ""
-
-
-def chrome_render_with_cookies(url, log_callback=None):
-    """通过 Chrome DevTools Protocol 获取渲染后的 DOM 和浏览器 Cookie。
-    不读取 Chrome 的 Cookies SQLite 文件，因此不会触发
-    --cookies-from-browser 的数据库权限问题。
-    """
-    chrome = _find_chrome()
-    if not chrome:
-        return "", {}
-
-    import time
-    import urllib.request
-    import random
-
-    # 使用独立临时 profile，避免锁定用户正在使用的 Chrome。
-    base = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "chrome_cdp_profile"
-    )
-    os.makedirs(base, exist_ok=True)
-
-    port = None
-    for candidate in range(9222, 9232):
-        try:
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{candidate}/json/version", timeout=0.3
-            ):
-                continue
-        except Exception:
-            port = candidate
-            break
-
-    if port is None:
-        return "", {}
-
-    if log_callback:
-        log_callback("正在用独立 Chrome 会话刷新视频地址并读取会话 Cookie……")
-
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    cmd = [
-        chrome,
-        "--headless=new",
-        "--disable-gpu",
-        "--disable-extensions",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-background-networking",
-        "--autoplay-policy=no-user-gesture-required",
-        "--remote-allow-origins=*",
-        f"--remote-debugging-port={port}",
-        f"--user-data-dir={base}",
-        "about:blank",
-    ]
-
-    proc = None
-    ws = None
-    try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=creationflags
-        )
-
-        endpoint = None
-        for _ in range(50):
-            try:
-                with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/json", timeout=0.5
-                ) as resp:
-                    pages = json.loads(resp.read().decode("utf-8", "ignore"))
-                if pages:
-                    endpoint = pages[0].get("webSocketDebuggerUrl")
-                    if endpoint:
-                        break
-            except Exception:
-                pass
-            time.sleep(0.2)
-
-        if not endpoint:
-            raise RuntimeError("Chrome DevTools 调试端口启动失败。")
-
-        import websocket
-        ws = websocket.create_connection(endpoint, timeout=5)
-        seq = 0
-
-        def cdp(method, params=None):
-            nonlocal seq
-            seq += 1
-            ident = seq
-            ws.send(json.dumps({
-                "id": ident, "method": method, "params": params or {}
-            }))
-            deadline = time.time() + 12
-            while time.time() < deadline:
-                raw = ws.recv()
-                msg = json.loads(raw)
-                if msg.get("id") == ident:
-                    if "error" in msg:
-                        raise RuntimeError(str(msg["error"]))
-                    return msg.get("result", {})
-            raise RuntimeError(f"Chrome CDP 超时：{method}")
-
-        cdp("Page.enable")
-        cdp("Network.enable")
-        cdp("Page.navigate", {"url": url})
-        time.sleep(7)
-
-        # 再给 TikTok 一点时间执行页面脚本。
-        for _ in range(3):
-            time.sleep(2)
-
-        cookies_result = cdp("Network.getAllCookies")
-        cookies = {}
-        for item in cookies_result.get("cookies", []):
-            name = item.get("name")
-            value = item.get("value")
-            domain = (item.get("domain") or "").lower()
-            if name:
-                # 同名 Cookie 以更具体的域名优先。
-                key = (domain, name)
-                cookies[key] = value
-
-        # 获取最终 DOM。
-        dom = cdp("Page.getResourceTree")
-        _ = dom  # 保留调用以确保页面已完成资源树初始化。
-        eval_result = cdp("Runtime.evaluate", {
-            "expression": "document.documentElement.outerHTML",
-            "returnByValue": True
-        })
-        html = ((eval_result.get("result") or {}).get("result") or {}).get(
-            "value", ""
-        )
-
-        # requests 使用 CookieJar 时按域名加入 Cookie。
-        cookiejar = []
-        for (domain, name), value in cookies.items():
-            cookiejar.append({
-                "domain": domain,
-                "name": name,
-                "value": value
-            })
-
-        return html, cookiejar
-
-    except Exception as e:
-        if log_callback:
-            log_callback(f"⚠️ Chrome CDP 获取 Cookie 失败：{e}")
-        return "", []
-    finally:
-        try:
-            if ws:
-                ws.close()
-        except Exception:
-            pass
-        try:
-            if proc:
-                proc.terminate()
-                proc.wait(timeout=3)
-        except Exception:
-            try:
-                if proc:
-                    proc.kill()
-            except Exception:
-                pass
-
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -888,9 +291,6 @@ class MainWindow(QMainWindow):
         download.clicked.connect(self.download_current_work)
 
     def parse_single(self):
-        import re
-        import requests
-
         text = self.single_url_edit.toPlainText().strip()
         if not text:
             QMessageBox.warning(self, "提示", "请先粘贴 TikTok 单作品 URL。")
@@ -914,83 +314,18 @@ class MainWindow(QMainWindow):
             self.single_log.append("没有找到可以解析的 TikTok 单作品 URL。")
             return
 
-        headers = {
-            "Accept": "video/*,*/*;q=0.8",
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/151.0.0.0 Safari/537.36"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }
-
         for index, url in enumerate(valid_urls, 1):
             self.single_log.append(f"\n[{index}/{len(valid_urls)}] 开始解析：")
             self.single_log.append(url)
 
-            m = re.search(r"/video/(\d+)", url)
-            video_id = m.group(1) if m else ""
-
-            author = ""
-            title = ""
-            image = ""
-            video_url = ""
-            duration = ""
-            resolution = ""
-
-            m = re.search(r"tiktok\.com/@([^/?#]+)", url, re.I)
-            if m:
-                author = m.group(1)
-
-            html = ""
-            try:
-                response = requests.get(
-                    url,
-                    headers=headers,
-                    timeout=20,
-                    allow_redirects=True
-                )
-                self.single_log.append(f"HTTP 状态：{response.status_code}")
-                html = response.text
-
-                data = extract_tiktok_data(html)
-                author = data["author"] or author
-                title = data["title"]
-                image = data["image"]
-                video_url = data["video_url"]
-                duration = data["duration"]
-                resolution = data["resolution"]
-
-                self.single_log.append(
-                    f"requests解析：标题={'有' if title else '无'}，"
-                    f"封面={'有' if image else '无'}，"
-                    f"视频地址={'有' if video_url else '无'}"
-                )
-
-            except Exception as e:
-                self.single_log.append(f"⚠️ requests 请求失败：{e}")
-
-            # requests 拿不到数据时，用本机 Chrome 渲染后的 DOM 再解析。
-            if not title or not image or not video_url:
-                rendered = load_with_chrome(
-                    url,
-                    lambda msg: self.single_log.append(msg)
-                )
-                if rendered:
-                    data = extract_tiktok_data(rendered)
-                    author = data["author"] or author
-                    title = data["title"] or title
-                    image = data["image"] or image
-                    video_url = data["video_url"] or video_url
-                    duration = data["duration"] or duration
-                    resolution = data["resolution"] or resolution
-
-                    self.single_log.append(
-                        f"Chrome解析：标题={'有' if title else '无'}，"
-                        f"封面={'有' if image else '无'}，"
-                        f"视频地址={'有' if video_url else '无'}"
-                    )
+            data = parse_url(url, log_callback=lambda msg: self.single_log.append(msg))
+            video_id = data["video_id"]
+            author = data["author"]
+            title = data["title"]
+            image = data["cover_url"]
+            video_url = data["video_url"]
+            duration = data["duration"]
+            resolution = data["resolution"]
 
             self.single_result.append(f"作品 {index}")
             self.single_result.append(f"作者：{author or '未获取'}")
