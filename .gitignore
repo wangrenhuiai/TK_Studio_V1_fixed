@@ -1,0 +1,19 @@
+# 浏览器配置文件（含 Cookies / 登录凭据 / 浏览历史等敏感数据）
+chrome_cdp_profile/
+chrome_headless_profile/
+
+# 数据库
+*.db
+
+# 运行时缓存
+__pycache__/
+*.pyc
+
+# 误产生的空文件 / 垃圾文件
+13.0
+26.2.1
+py
+TikTokpy
+yt-dlp
+↓
+浏览器
