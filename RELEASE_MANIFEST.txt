@@ -1,0 +1,42 @@
+===============================================
+  TK Studio V1.6.4 — Release Manifest
+  Phase 8-C Release Candidate
+===============================================
+
+Git Commit:        c6926415b51cee1248f4624038c915cf9b1389f3
+Git Commit (short): c692641
+Commit Time:       2026-09-04 23:42:49 +0800
+
+EXE:               D:\TK_Studio_V1_fixed\dist\TKStudio\TKStudio.exe
+EXE Size:          3284548 bytes (3.13 MB)
+EXE SHA256:        C25C0761CA047374D41008822107CDD5CE01499A999761A11E465B8609C5E2C1
+Build Time:        2026-09-04 23:47:06
+Build Tool:        PyInstaller 6.22.2
+PySide6:           6.11.2
+Python:            3.11.9
+
+Freeze Time:       2026-09-04 23:55:00 +0800
+
+Automated Tests:   122 passed
+compileall:        PASS
+
+Acceptance Status: RELEASE FROZEN / PASS
+
+Known Transient:  test_concurrent_same_title_downloads
+                  First run: disk I/O error (transient)
+                  Retest:    PASS
+                  Conclusion: non-reproducible transient I/O event
+
+Acceptance Summary:
+  EXE Build:                  PASS (4/4)
+  EXE Startup:                PASS (6/6)
+  Functional Black-box Proxy:  PASS (8/8)
+  Exception Tests:            PASS (6/6)
+  Final Regression:          PASS (2/2)
+  Full Automated Regression: 122 passed
+
+Total: 26/26 PASS
+
+===============================================
+  RELEASE FROZEN / PASS
+===============================================

@@ -300,10 +300,9 @@ def build_headers(page_url, range_header=None):
             "Chrome/151.0.0.0 Safari/537.36"
         ),
         "Referer": page_url or "https://www.tiktok.com/",
-        "Origin": "https://www.tiktok.com",
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "identity",
+        "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
     }
     if range_header:
@@ -365,10 +364,6 @@ def download_once(url, page_url, path, session, cookie_items=None,
             headers["Cookie"] = "; ".join(cookie_pairs)
 
     # TikTok CDN 对 Range/浏览器请求特征更敏感
-    headers["Sec-Fetch-Dest"] = "video"
-    headers["Sec-Fetch-Mode"] = "cors"
-    headers["Sec-Fetch-Site"] = "cross-site"
-
     r = session.get(url, headers=headers, stream=True,
                     timeout=(20, 90), allow_redirects=True)
     status = r.status_code
