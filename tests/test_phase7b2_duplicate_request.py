@@ -56,7 +56,7 @@ def test_case1_parser_ex_success_single_get():
                        "image": "cover.jpg", "video_url": "video.mp4",
                        "duration": "30", "resolution": "1080x1920"
                    }):
-            with patch("core.tiktok_service_ex.chrome_render_with_cookies") as mock_chrome:
+            with patch("core.tiktok_service_ex.load_with_chrome") as mock_chrome:
                 result = parse_url_ex(
                     "https://www.tiktok.com/@user/video/123"
                 )
@@ -95,7 +95,7 @@ def test_case2_legacy_reuses_html_no_duplicate_get():
                            "video_url": "legacy_video.mp4",
                            "duration": "60", "resolution": "720x1280"
                        }) as mock_legacy_parser:
-                with patch("core.tiktok_service_ex.chrome_render_with_cookies") as mock_chrome:
+                with patch("core.tiktok_service_ex.load_with_chrome") as mock_chrome:
                     result = parse_url_ex(
                         "https://www.tiktok.com/@user/video/123"
                     )
@@ -142,8 +142,8 @@ def test_case3_chrome_fallback_single_get():
                             "duration": "60", "resolution": "720x1280"},
                        ]):
                 # Chrome 渲染成功
-                with patch("core.tiktok_service_ex.chrome_render_with_cookies",
-                           return_value=(_HTML_CHROME_RENDERED, [])) as mock_chrome:
+                with patch("core.tiktok_service_ex.load_with_chrome",
+                           return_value=_HTML_CHROME_RENDERED) as mock_chrome:
                     result = parse_url_ex(
                         "https://www.tiktok.com/@user/video/123"
                     )
@@ -180,8 +180,8 @@ def test_case4_all_fail_no_duplicate_get():
                             "duration": "", "resolution": ""},
                        ]):
                 # Chrome 也失败（返回空）
-                with patch("core.tiktok_service_ex.chrome_render_with_cookies",
-                           return_value=("", [])) as mock_chrome:
+                with patch("core.tiktok_service_ex.load_with_chrome",
+                           return_value="") as mock_chrome:
                     result = parse_url_ex(
                         "https://www.tiktok.com/@user/video/123"
                     )
@@ -207,8 +207,8 @@ def test_case5_429_retry_no_extra_requests():
     # fetch_tiktok_html 返回空（Retry 耗尽或网络失败）
     with patch("core.tiktok_service_ex.fetch_tiktok_html",
                return_value="") as mock_fetch:
-        with patch("core.tiktok_service_ex.chrome_render_with_cookies",
-                   return_value=(_HTML_CHROME_RENDERED, [])) as mock_chrome:
+        with patch("core.tiktok_service_ex.load_with_chrome",
+                   return_value=_HTML_CHROME_RENDERED) as mock_chrome:
             result = parse_url_ex(
                 "https://www.tiktok.com/@user/video/123"
             )
@@ -235,7 +235,7 @@ def test_conservative_merge_no_overwrite():
                        "video_url": "ex_video.mp4",
                        "duration": "30", "resolution": "1080x1920"
                    }):
-            with patch("core.tiktok_service_ex.chrome_render_with_cookies") as mock_chrome:
+            with patch("core.tiktok_service_ex.load_with_chrome") as mock_chrome:
                 result = parse_url_ex(
                     "https://www.tiktok.com/@user/video/123"
                 )
@@ -274,8 +274,8 @@ def test_chrome_conservative_merge():
                             "video_url": "chrome_video.mp4",
                             "duration": "60", "resolution": "720x1280"},
                        ]):
-                with patch("core.tiktok_service_ex.chrome_render_with_cookies",
-                           return_value=(_HTML_CHROME_RENDERED, [])):
+                with patch("core.tiktok_service_ex.load_with_chrome",
+                           return_value=_HTML_CHROME_RENDERED):
                     result = parse_url_ex(
                         "https://www.tiktok.com/@user/video/123"
                     )
@@ -307,8 +307,8 @@ def test_no_original_parse_url_called():
                             "image": "", "video_url": "",
                             "duration": "", "resolution": ""},
                        ]):
-                with patch("core.tiktok_service_ex.chrome_render_with_cookies",
-                           return_value=("", [])):
+                with patch("core.tiktok_service_ex.load_with_chrome",
+                           return_value=""):
                     # mock tiktok_service.parse_url 确保不被调用
                     with patch("core.tiktok_service.parse_url") as mock_orig:
                         result = parse_url_ex(
