@@ -74,7 +74,7 @@ def test_parse_url_ex_returns_dict():
     with patch("core.tiktok_service_ex.fetch_tiktok_html", return_value=""):
         with patch("core.tiktok_service_ex.extract_tiktok_data",
                    return_value=_EMPTY_PARSER_RESULT):
-            with patch("core.tiktok_service_ex.load_with_chrome", return_value=""):
+            with patch("core.tiktok_service_ex.chrome_render_with_cookies", return_value=("", [])):
                 result = parse_url_ex("https://www.tiktok.com/@user/video/123")
                 assert isinstance(result, dict)
                 assert "video_id" in result
@@ -92,7 +92,7 @@ def test_retry_html_parsed_by_parser_ex():
     with patch("core.tiktok_service_ex.fetch_tiktok_html",
                return_value=_SAMPLE_HTML_WITH_JSON):
         with patch("core.tiktok_service_ex.extract_tiktok_data") as mock_legacy:
-            with patch("core.tiktok_service_ex.load_with_chrome") as mock_chrome:
+            with patch("core.tiktok_service_ex.chrome_render_with_cookies") as mock_chrome:
                 result = parse_url_ex(
                     "https://www.tiktok.com/@testuser/video/7681265056633326878",
                     log_callback=lambda msg: logs.append(msg)
@@ -114,7 +114,7 @@ def test_video_id_extraction():
     with patch("core.tiktok_service_ex.fetch_tiktok_html", return_value=""):
         with patch("core.tiktok_service_ex.extract_tiktok_data",
                    return_value=_EMPTY_PARSER_RESULT):
-            with patch("core.tiktok_service_ex.load_with_chrome", return_value=""):
+            with patch("core.tiktok_service_ex.chrome_render_with_cookies", return_value=("", [])):
                 result = parse_url_ex(
                     "https://www.tiktok.com/@user/video/7681265056633326878"
                 )
@@ -126,7 +126,7 @@ def test_author_extraction_from_url():
     with patch("core.tiktok_service_ex.fetch_tiktok_html", return_value=""):
         with patch("core.tiktok_service_ex.extract_tiktok_data",
                    return_value=_EMPTY_PARSER_RESULT):
-            with patch("core.tiktok_service_ex.load_with_chrome", return_value=""):
+            with patch("core.tiktok_service_ex.chrome_render_with_cookies", return_value=("", [])):
                 result = parse_url_ex(
                     "https://www.tiktok.com/@rfbxha/video/123"
                 )
@@ -151,7 +151,7 @@ def test_fallback_when_title_missing():
             # legacy parser 从同一 HTML 提取到数据
             with patch("core.tiktok_service_ex.extract_tiktok_data",
                        return_value=legacy_result) as mock_legacy:
-                with patch("core.tiktok_service_ex.load_with_chrome") as mock_chrome:
+                with patch("core.tiktok_service_ex.chrome_render_with_cookies") as mock_chrome:
                     result = parse_url_ex(
                         "https://www.tiktok.com/@user/video/123",
                         log_callback=lambda msg: logs.append(msg)
@@ -185,7 +185,7 @@ def test_fallback_when_video_url_missing():
                            "image": "", "video_url": "fb_url",
                            "duration": "", "resolution": ""
                        }):
-                with patch("core.tiktok_service_ex.load_with_chrome") as mock_chrome:
+                with patch("core.tiktok_service_ex.chrome_render_with_cookies") as mock_chrome:
                     result = parse_url_ex("https://www.tiktok.com/@user/video/123")
                     assert result["video_url"] == "fb_url"
                     # Chrome 不应触发（legacy parser 已补全）
@@ -233,8 +233,8 @@ def test_chrome_failure_does_not_crash():
             with patch("core.tiktok_service_ex.extract_tiktok_data",
                        return_value=_EMPTY_PARSER_RESULT):
                 # Chrome 返回空（失败）
-                with patch("core.tiktok_service_ex.load_with_chrome",
-                           return_value=""):
+                with patch("core.tiktok_service_ex.chrome_render_with_cookies",
+                           return_value=("", [])):
                     result = parse_url_ex(
                         "https://www.tiktok.com/@user/video/123",
                         log_callback=lambda msg: logs.append(msg)
@@ -254,8 +254,8 @@ def test_empty_html_triggers_chrome_fallback():
         '<meta property="og:video" content="chrome_video.mp4"></html>'
     )
     with patch("core.tiktok_service_ex.fetch_tiktok_html", return_value=""):
-        with patch("core.tiktok_service_ex.load_with_chrome",
-                   return_value=chrome_html) as mock_chrome:
+        with patch("core.tiktok_service_ex.chrome_render_with_cookies",
+                   return_value=(chrome_html, [])) as mock_chrome:
             result = parse_url_ex(
                 "https://www.tiktok.com/@user/video/123",
                 log_callback=lambda msg: logs.append(msg)
@@ -270,6 +270,6 @@ def test_invalid_url_no_crash():
     with patch("core.tiktok_service_ex.fetch_tiktok_html", return_value=""):
         with patch("core.tiktok_service_ex.extract_tiktok_data",
                    return_value=_EMPTY_PARSER_RESULT):
-            with patch("core.tiktok_service_ex.load_with_chrome", return_value=""):
+            with patch("core.tiktok_service_ex.chrome_render_with_cookies", return_value=("", [])):
                 result = parse_url_ex("not_a_url")
                 assert isinstance(result, dict)

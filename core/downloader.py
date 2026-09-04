@@ -209,7 +209,11 @@ def run_download(work_id, video_url, output_dir, db,
         last_error = None
         urls = [video_url]
         refreshed = False
-        cookie_items = []
+        # Phase 7-F：首次请求前尝试从 cookie_cache 取 parse 阶段获取的 cookies，
+        # 使 attempt 1 即带登录态 cookies，避免无 cookies → 403 → refresh → 403 循环。
+        # cookie_cache 为纯内存，未命中返回 []，走现有 refresh fallback。
+        from core import cookie_cache
+        cookie_items = cookie_cache.get_cookie(video_id) if video_id else []
 
         for attempt in range(1, 4):
             # 每次 attempt 开始前检查取消：已取消则不再发起新请求。

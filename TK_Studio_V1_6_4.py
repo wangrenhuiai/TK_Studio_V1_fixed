@@ -180,6 +180,9 @@ class MainWindow(QMainWindow):
         self._login_succeeded = False
         # TikTok 登录态检查 Worker（M5）：启动时一次性 headless 检查。
         self._login_check_worker = None
+        # Phase 7-F：登录态标志，供 Parse/Download 前门控使用。
+        # 由 _on_login_check_done / _on_login_success / on_logout_clicked 维护。
+        self._is_logged_in = False
         # 主页抓取 Worker（B2.2-B）：同一时刻只允许一个主页抓取任务。
         self._home_worker = None
         self.setWindowTitle("TK Studio V1.6.4 - TikTok作品管理工具")
@@ -627,6 +630,18 @@ class MainWindow(QMainWindow):
 
         从 parse_single 和 _on_resolve_finished 调用，统一后续流程。
         """
+        # Phase 7-F：未登录时阻止解析，避免匿名请求被 TikTok 风控/CDN 拒绝。
+        if not self._is_logged_in:
+            reply = QMessageBox.question(
+                self, "未登录",
+                "当前未登录 TikTok，解析可能无法获取视频地址。\n"
+                "是否现在登录？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self.on_login_clicked()
+            return
+
         valid_urls = []
         for url in urls:
             if "tiktok.com" not in url.lower():
@@ -791,6 +806,15 @@ class MainWindow(QMainWindow):
         共用此方法。互斥、排队（超过并发上限自动进入等待并自动补位）、
         Worker 创建/回收/取消全部由 TaskManager 负责。
         """
+        # Phase 7-F：未登录时阻止下载，避免 CDN 403 → refresh → 403 无效循环。
+        if not self._is_logged_in:
+            QMessageBox.warning(
+                self, "无法下载",
+                "当前未登录 TikTok，下载将被 CDN 拒绝（403）。\n"
+                "请先在「TikTok 登录」页面扫码登录。"
+            )
+            return
+
         # 互斥：同一作品排队中或下载中不重复入队。
         if self.task_manager.is_busy(work_id):
             QMessageBox.information(
@@ -1011,6 +1035,8 @@ class MainWindow(QMainWindow):
         self._login_check_worker = None
         if self._login_worker is not None and self._login_worker.isRunning():
             return
+        # Phase 7-F：维护登录态标志供 Parse/Download 门控使用。
+        self._is_logged_in = bool(logged_in)
         self.login_status_label.setText(
             "状态：已登录" if logged_in else "状态：未登录"
         )
@@ -1073,6 +1099,10 @@ class MainWindow(QMainWindow):
         if ok:
             self.login_status_label.setText("状态：未登录")
             self._append_login_log("登出完成")
+            # Phase 7-F：登出后清除登录态标志 + 内存 cookie 缓存。
+            self._is_logged_in = False
+            from core import cookie_cache
+            cookie_cache.clear_all()
             # B3.4: 同步清理 auth profile 快照，避免残留过期登录态。
             delete_auth_profile(log_callback=self._append_login_log)
         else:
@@ -1096,6 +1126,8 @@ class MainWindow(QMainWindow):
         """登录成功回调（主线程）。"""
         self.login_status_label.setText("状态：已登录")
         self._append_login_log("登录成功！")
+        # Phase 7-F：登录态标志置位，允许 Parse/Download。
+        self._is_logged_in = True
         # B3.4: 置位成功标志，snapshot 在 _on_login_worker_finished 执行
         # （此时 shutdown 可能未完成，Chrome 尚未释放 profile 锁）。
         self._login_succeeded = True

@@ -42,7 +42,7 @@ def test_case1_valid_result_success():
     with patch("core.tiktok_service_ex.fetch_tiktok_html",
                return_value=_HTML_WITH_FULL_DATA):
         with patch("core.tiktok_service_ex.extract_tiktok_data") as mock_legacy:
-            with patch("core.tiktok_service_ex.load_with_chrome") as mock_chrome:
+            with patch("core.tiktok_service_ex.chrome_render_with_cookies") as mock_chrome:
                 result = parse_url_ex(
                     "https://www.tiktok.com/@user/video/7681265056633326878",
                     log_callback=lambda msg: logs.append(msg),
@@ -71,8 +71,8 @@ def test_case2_http200_no_data_failure():
             with patch("core.tiktok_service_ex.extract_tiktok_data",
                        return_value=_empty):
                 # Chrome 也拿不到
-                with patch("core.tiktok_service_ex.load_with_chrome",
-                           return_value=""):
+                with patch("core.tiktok_service_ex.chrome_render_with_cookies",
+                           return_value=("", [])):
                     result = parse_url_ex(
                         "https://www.tiktok.com/@user/video/7681265056633326878",
                         log_callback=lambda msg: logs.append(msg),
@@ -106,7 +106,7 @@ def test_case3_parser_ex_fail_original_success():
             # legacy parser 从同一 HTML 提取到数据
             with patch("core.tiktok_service_ex.extract_tiktok_data",
                        return_value=legacy_result) as mock_legacy:
-                with patch("core.tiktok_service_ex.load_with_chrome") as mock_chrome:
+                with patch("core.tiktok_service_ex.chrome_render_with_cookies") as mock_chrome:
                     result = parse_url_ex(
                         "https://www.tiktok.com/@user/video/123",
                         log_callback=lambda msg: logs.append(msg),
@@ -140,8 +140,8 @@ def test_case4_chrome_fallback_success():
             # extract_tiktok_data: legacy 空 + Chrome 数据
             with patch("core.tiktok_service_ex.extract_tiktok_data",
                        side_effect=[_empty, chrome_result]):
-                with patch("core.tiktok_service_ex.load_with_chrome",
-                           return_value=_chrome_html):
+                with patch("core.tiktok_service_ex.chrome_render_with_cookies",
+                           return_value=(_chrome_html, [])):
                     result = parse_url_ex(
                         "https://www.tiktok.com/@user/video/123",
                         log_callback=lambda msg: logs.append(msg),
@@ -161,7 +161,7 @@ def test_case5_all_fail_final_failure():
     # fetch_tiktok_html 返回空（网络失败）
     with patch("core.tiktok_service_ex.fetch_tiktok_html", return_value=""):
         # Chrome 也返回空
-        with patch("core.tiktok_service_ex.load_with_chrome", return_value=""):
+        with patch("core.tiktok_service_ex.chrome_render_with_cookies", return_value=("", [])):
             result = parse_url_ex(
                 "https://www.tiktok.com/@user/video/123",
                 log_callback=lambda msg: logs.append(msg),
@@ -293,8 +293,8 @@ def test_merge_empty_does_not_overwrite_valid():
                        "video_url": "",  # ← 空，不应覆盖
                        "duration": "", "resolution": ""
                    }):
-            with patch("core.tiktok_service_ex.load_with_chrome",
-                       return_value=""):
+            with patch("core.tiktok_service_ex.chrome_render_with_cookies",
+                       return_value=("", [])):
                 result = parse_url_ex(
                     "https://www.tiktok.com/@user/video/123",
                     log_callback=lambda msg: logs.append(msg),

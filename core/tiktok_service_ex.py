@@ -1,4 +1,4 @@
-"""TikTok 解析服务增强层（Phase 7-A + 7-B.2）。
+"""TikTok 解析服务增强层（Phase 7-A + 7-B.2 + 7-F）。
 
 在冻结的 ``core/tiktok_service.py`` 之上，新增结构化解析链路：
 
@@ -10,27 +10,35 @@
         ↓
     （字段缺失时）parser.extract_tiktok_data(html)  ← 复用已有 HTML，不重复 GET
         ↓
-    （仍缺失时）chrome_bridge.load_with_chrome(url)  ← Chrome fallback
+    （仍缺失时）chrome_bridge.chrome_render_with_cookies(url)  ← Phase 7-F: CDP fallback
         ↓
-    结构化作品数据
+    结构化作品数据 + cookie_items（写入内存缓存供 download 使用）
 
 Phase 7-B.2 改动：
 - 消除 parser_ex 失败后 _original_parse_url 对同一 URL 的重复 requests.get
 - 直接用 extract_tiktok_data(html) 复用已获取的 HTML
 - Chrome fallback 逻辑内联，保持与 tiktok_service.parse_url 一致的行为
 
+Phase 7-F 改动：
+- Chrome fallback 从 load_with_chrome(--dump-dom) 改为 chrome_render_with_cookies(CDP)
+- CDP 使用 chrome_login_profile（已登录态），同时获取 video_url + cookies
+- 解析成功后将 cookie_items 写入 cookie_cache（纯内存），供 download 首次请求注入
+- 不打印 / 不日志输出 cookie value
+
 设计原则：
 - 不修改冻结的 ``core/tiktok_service.py`` / ``core/parser.py``
 - 保持 ``parse_url(url, log_callback)`` 签名完全兼容
-- 解析优先级：parser_ex JSON → 原 parser.py（复用 HTML） → Chrome fallback
-- 已获取的 HTML 不允许为 legacy parser 再次 GET
+- 解析优先级：parser_ex JSON → 原 parser.py（复用 HTML） → Chrome CDP fallback
+- 已获取的 HTML 不允许为 legacy parser 再次 GET（Phase 7-B.2 约束保持）
+- CDP fallback 不是 requests.get，不违反"一次初始 HTTP GET"约束
 """
 import re
 
 from core.tiktok_request import fetch_tiktok_html
 from core.parser_ex import extract_tiktok_data_ex
 from core.parser import extract_tiktok_data
-from core.chrome_bridge import load_with_chrome
+from core.chrome_bridge import chrome_render_with_cookies
+from core import cookie_cache
 
 
 def parse_url_ex(url, log_callback=None):
@@ -113,15 +121,22 @@ def parse_url_ex(url, log_callback=None):
         if log_callback:
             log_callback("⚠️ Retry 请求未获取 HTML")
 
-    # 5. Chrome fallback（保留：video_url 仍为空时触发，与 tiktok_service.parse_url 一致）
+    # Phase 7-F：cookie_items 初始化为空；CDP fallback 填充后写入 cookie_cache。
+    cookie_items = []
+
+    # 5. Chrome CDP fallback（Phase 7-F：改用 CDP 获取 video_url + cookies）
+    #    保留：video_url 仍为空时触发。
+    #    CDP 使用 chrome_login_profile（已登录态），不是 requests.get，不违反 7-B.2 约束。
     if not result["title"] or not result["cover_url"] or not result["video_url"]:
         if log_callback:
-            log_callback("字段仍缺失，启用 Chrome fallback……")
+            log_callback("字段仍缺失，启用 Chrome CDP fallback……")
 
-        rendered = load_with_chrome(url, log_callback=log_callback)
+        rendered, cookie_items = chrome_render_with_cookies(
+            url, log_callback=log_callback
+        )
         if rendered:
             chrome_data = extract_tiktok_data(rendered)
-            # 保守合并：只补充缺失字段，不覆盖已有值（与原 parse_url_ex fallback 一致）
+            # 保守合并：只补充缺失字段，不覆盖已有值（与原 fallback 一致）
             if not result["author"] and chrome_data["author"]:
                 result["author"] = chrome_data["author"]
             if not result["title"] and chrome_data["title"]:
@@ -141,6 +156,11 @@ def parse_url_ex(url, log_callback=None):
                     f"封面={'有' if result['cover_url'] else '无'}，"
                     f"视频地址={'有' if result['video_url'] else '无'}"
                 )
+
+    # Phase 7-F：解析成功且有 video_url 时，将 cookies 写入内存缓存
+    # 供 download 首次请求注入（不打印 / 不日志 / 不写文件）
+    if result["video_url"] and result["video_id"] and cookie_items:
+        cookie_cache.set_cookie(result["video_id"], cookie_items)
 
     return result
 
