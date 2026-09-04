@@ -33,7 +33,7 @@ import time
 #
 # 因此最终文件名在下载开始前统一仲裁：
 # 1) 进程内 in-flight 注册表（防并发同进程冲突）
-# 2) DB 归属查询 download_tasks.message（防跨会话覆盖其他作品的文件）
+# 2) DB 归属查询 works.local_path（防跨会话覆盖其他作品的文件）
 # 3) 文件存在检查（防覆盖手工/旧版本残留文件）
 # 干净名优先（保持单任务下载体验不变）；冲突时追加 " [video_id]"。
 # ============================================================
@@ -201,7 +201,7 @@ def _prepare_part_file(part, progress_cb=None):
 
 
 def _cleanup_part_file(part):
-    """HomeFetch-A.3 Task 7：清理残留 .part 临时文件（最佳努力）。
+    """清理残留 .part 临时文件（最佳努力）。
 
     - 文件不存在：视为已清理，返回 True
     - 被占用（Windows Defender 实时扫描锁定）：短退避重试删除
@@ -503,7 +503,7 @@ def run_download(work_id, video_url, output_dir, db,
             db, work_id, output_dir, title, video_id)
         part = path + ".part"
 
-        # HomeFetch-A.3 Task 7 + FIX-DL.1：下载前清理历史残留 .part。
+        # 下载前清理历史残留 .part。
         # 新方案下 .part 跟随最终文件名（并发唯一，不再混写/互删）；
         # 旧版残留的 "标题.mp4.part"（与当前 part 不同名时）一并清理。
         _cleanup_part_file(part)
@@ -533,11 +533,7 @@ def run_download(work_id, video_url, output_dir, db,
         last_error = None
         urls = [video_url]
         refreshed = False
-        # Phase 7-F：首次请求前尝试从 cookie_cache 取 parse 阶段获取的 cookies，
-        # 使 attempt 1 即带登录态 cookies，避免无 cookies → 403 → refresh → 403 循环。
-        # cookie_cache 为纯内存，未命中返回 []，走现有 refresh fallback。
-        from core import cookie_cache
-        cookie_items = cookie_cache.get_cookie(video_id) if video_id else []
+        cookie_items = []
 
         for attempt in range(1, 4):
             # 每次 attempt 开始前检查取消：已取消则不再发起新请求。
@@ -605,7 +601,7 @@ def run_download(work_id, video_url, output_dir, db,
             db.update_download(work_id, "下载失败")
         except Exception:
             pass
-        # HomeFetch-A.3 Task 7：下载失败后自动清理残留临时文件，
+        # 下载失败后自动清理残留临时文件，
         # 避免被锁定的 .part 残留引发后续 Permission denied。
         # 用户主动取消除外：保留 .part 供下次续传。
         # FIX-DL.1：优先使用本次下载实际使用的 .part 路径；

@@ -6,6 +6,7 @@
 3. 并发同名下载（同标题不同 video_id）：文件名仲裁 + 无损坏
 4. 跨会话同名保护：不覆盖其他作品已下载的文件
 5. 下载完成后 .part 无残留
+6. 同作品重下允许覆盖自身
 """
 import ctypes
 import hashlib
@@ -81,11 +82,6 @@ def _make_work(db, video_id, title, video_url):
     return work_id
 
 
-def _add_finished_task(db, work_id, path):
-    task_id = db.create_download_task(work_id, "test")
-    db.update_download_task(task_id, status="完成", progress=100, message=path)
-
-
 class _FileHandler(http.server.BaseHTTPRequestHandler):
     files = {}
 
@@ -114,7 +110,8 @@ def http_server():
     with http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler) as srv:
         thread = threading.Thread(target=srv.serve_forever, daemon=True)
         thread.start()
-        yield f"http://127.0.0.1:{srv.server_address[0 + 1]}"
+        port = srv.server_address[1]
+        yield f"http://127.0.0.1:{port}"
         srv.shutdown()
 
 
@@ -272,7 +269,7 @@ def test_concurrent_same_title_downloads(http_server, tmp_path):
 
 def test_claim_release_registry():
     """注册表占用检测与释放。"""
-    key = None
+    key1 = key2 = None
     try:
         path1, key1 = _claim_final_path(None, 1, "Z:/nonexistent_dir",
                                         "same title", "aaa")
@@ -288,7 +285,7 @@ def test_claim_release_registry():
 
 
 # ------------------------------------------------------------
-# 4. 跨会话同名保护
+# 4. 跨会话同名保护（已有同名 mp4 不覆盖）
 # ------------------------------------------------------------
 
 def test_cross_session_no_overwrite(http_server, tmp_path):
