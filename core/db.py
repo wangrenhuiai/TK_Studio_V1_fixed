@@ -32,7 +32,14 @@ class Database:
 
 
     def connect(self):
-        return sqlite3.connect(self.path)
+        # FIX-DB.1：并发写稳定性加固
+        # - timeout=5：sqlite3.connect 层面 busy timeout（秒）
+        # - PRAGMA busy_timeout=5000：SQLite 层面 busy timeout（毫秒）
+        # - PRAGMA journal_mode=WAL：写不阻塞读，并发性能提升
+        con = sqlite3.connect(self.path, timeout=5)
+        con.execute("PRAGMA busy_timeout=5000")
+        con.execute("PRAGMA journal_mode=WAL")
+        return con
 
 
     def init_db(self):
