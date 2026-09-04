@@ -11,7 +11,7 @@ Worker 内部禁止任何 UI 操作，所有 UI 更新通过信号回到主线�
 """
 from PySide6.QtCore import QThread, Signal
 
-from core.tiktok_service import parse_url
+from core.tiktok_service_ex import parse_url  # Phase 7-A: 增强解析链（Retry + JSON Layer + 原 fallback）
 
 
 class ParseWorker(QThread):
@@ -61,6 +61,10 @@ class ParseWorker(QThread):
                 data["logs"] = logs
                 data["index"] = index
                 data["total"] = total
+                # Phase 7-A Final Acceptance: 显式成功标志，区分"URL 处理完成"与"解析成功"。
+                # success signal 语义为"URL 处理完成（未抛异常）"，
+                # 真正的成功判定以 video_url 是否有效为准（HTTP 200 ≠ 解析成功）。
+                data["success"] = bool(video_url)
                 self.success.emit(data)
             except Exception as e:
                 self.failed.emit(str(e))

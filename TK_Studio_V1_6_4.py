@@ -164,6 +164,10 @@ class MainWindow(QMainWindow):
         self._parse_worker = None
         # 本次解析的 URL 列表，用于竞态校验（旧结果不得覆盖当前输入）。
         self._parse_token = None
+        # Phase 7-A Final Acceptance: 本批次中获取到有效 video_url 的作品数。
+        # 用于 _on_parse_finished 区分"解析任务完成"与"解析成功"，
+        # 避免 video_url 全空时仍输出 "✅ 解析任务完成"（假成功）。
+        self._parse_success_count = 0
         # C1 方案 B: 短链解析后台 Worker（同一时刻只允许一个）。
         self._resolve_worker = None
         # 短链解析阶段暂存的原始 URL 列表，解析完成后用于后续 tiktok.com / /video/ 校验。
@@ -641,6 +645,8 @@ class MainWindow(QMainWindow):
 
         # 记录本次解析 token，用于竞态校验。
         self._parse_token = list(valid_urls)
+        # Phase 7-A Final Acceptance: 重置成功计数，区分"任务完成"与"解析成功"。
+        self._parse_success_count = 0
 
         # 禁用解析按钮，避免重复点击。
         self.single_parse_btn.setEnabled(False)
@@ -695,6 +701,8 @@ class MainWindow(QMainWindow):
 
         if video_url:
             self.single_result.append("✅ 已解析视频地址并写入作品库。")
+            # Phase 7-A Final Acceptance: 累计有效解析数，供 _on_parse_finished 判定。
+            self._parse_success_count += 1
         else:
             self.single_result.append(
                 "⚠️ 已写入作品库，但暂未获取视频地址，当前不能直接下载。"
@@ -718,7 +726,18 @@ class MainWindow(QMainWindow):
         try:
             # 正常完成时追加完成日志；失败时已在 _on_parse_failed 提示。
             if self._parse_token is not None:
-                self.single_log.append("\n✅ 解析任务完成。")
+                # Phase 7-A Final Acceptance: 区分"任务完成"与"解析成功"。
+                # HTTP 200 ≠ 解析成功；任务执行完成 ≠ 解析成功。
+                # video_url 全空时不输出 ✅，避免假成功误导。
+                if self._parse_success_count > 0:
+                    self.single_log.append(
+                        f"\n✅ 解析任务完成（{self._parse_success_count} 个作品获取到视频地址）。"
+                    )
+                else:
+                    self.single_log.append(
+                        "\n⚠️ 解析任务完成，但未获取到任何视频地址。"
+                        "（可能 TikTok 风控/验证页，建议间隔 30s 后重试或使用 Chrome fallback）"
+                    )
             # 无论成功/失败，刷新作品列表与下载按钮状态（可能已有部分作品入库）。
             self._sync_download_ui()
         finally:
