@@ -293,12 +293,51 @@ class TikTokLogin:
         """
         return self._start_chrome(chrome_path, profile_dir, headless=True)
 
+    def _cleanup_orphan_chrome(self, profile_dir):
+        """清理占用指定 profile 的孤儿 Chrome 进程。
+
+        当 EXE 被强制终止时，check_existing_login 启动的 headless Chrome
+        可能未被回收，导致 profile 锁残留，后续 start_login_session 无法
+        启动新的可见 Chrome 窗口。本方法在启动新 Chrome 前调用，确保
+        profile 不被占用。
+        """
+        try:
+            # 用 wmic 查找命令行包含 profile_dir 的 chrome.exe 进程
+            result = subprocess.run(
+                [
+                    "wmic", "process", "where",
+                    f"name='chrome.exe' and CommandLine like '%{profile_dir}%'",
+                    "get", "ProcessId",
+                ],
+                capture_output=True, text=True, timeout=5,
+            )
+            pids = []
+            for line in result.stdout.strip().splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    pids.append(int(line))
+            for pid in pids:
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid)],
+                        capture_output=True, timeout=5,
+                    )
+                except Exception:
+                    pass
+            if pids:
+                time.sleep(1)  # 等待 profile 锁释放
+        except Exception:
+            pass  # wmic 不可用或无匹配进程，静默跳过
+
     def _start_chrome(self, chrome_path, profile_dir, headless=True):
         """启动 Chrome + CDP 会话。
 
         复用 chrome_bridge.py 的端口扫描和 CDP 连接模式，
         但使用独立 LOGIN_PROFILE_DIR，且可选择 headless/visible。
         """
+        # 清理可能残留的孤儿 Chrome 进程，释放 profile 锁
+        self._cleanup_orphan_chrome(profile_dir)
+
         # 端口扫描：9222-9231
         port = None
         for candidate in range(9222, 9232):
