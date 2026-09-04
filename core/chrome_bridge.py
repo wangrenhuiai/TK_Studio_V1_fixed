@@ -1,15 +1,9 @@
 """Chrome / CDP 渲染模块。
 
-Phase 7-F：统一 Chrome Profile。
-chrome_render_with_cookies() 改用 chrome_login_profile（已登录态），
-使 Parse fallback 与 Refresh video_url 共享同一登录态 session，
-解决 Parse/Refresh profile 不一致导致 CDN 403 的问题。
-
-load_with_chrome() 保留 chrome_headless_profile（--dump-dom），
-供冻结的 core/tiktok_service.py 向后兼容，生产 ParseWorker 不再走此路径。
-
+保持与 TK_Studio_V1_6_4.py 中 _find_chrome / load_with_chrome /
+chrome_render_with_cookies 完全一致的行为：
 - Chrome 路径搜索
-- chrome_login_profile（CDP，已登录）/ chrome_headless_profile（dump-dom）
+- chrome_headless_profile / chrome_cdp_profile（位于项目根目录）
 - 9222~9231 端口探测
 - Page.navigate / Network.enable / Network.getAllCookies / Runtime.evaluate
 - Chrome 进程关闭流程
@@ -21,8 +15,9 @@ import random
 import subprocess
 import urllib.request
 
-# 项目根目录（core/chrome_bridge.py 的上一级），profile 目录放在此处。
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# FIX-EXE.1：profile 目录使用用户可写数据根目录（EXE 时 %LOCALAPPDATA%\TK_Studio）。
+from core.paths import get_app_data_root
+_PROJECT_ROOT = get_app_data_root()
 
 
 def _find_chrome():
@@ -86,9 +81,8 @@ def chrome_render_with_cookies(url, log_callback=None):
     if not chrome:
         return "", {}
 
-    # Phase 7-F：统一使用 chrome_login_profile（已登录态），使 Parse fallback
-    # 与 Refresh 共享同一登录态 session，解决 CDN 403（session/cookie 不匹配）。
-    base = os.path.join(_PROJECT_ROOT, "chrome_login_profile")
+    # 使用独立临时 profile，避免锁定用户正在使用的 Chrome。
+    base = os.path.join(_PROJECT_ROOT, "chrome_cdp_profile")
     os.makedirs(base, exist_ok=True)
 
     port = None

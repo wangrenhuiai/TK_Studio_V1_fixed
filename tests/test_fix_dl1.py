@@ -257,14 +257,26 @@ def test_concurrent_same_title_downloads(http_server, tmp_path):
     assert len(mp4s) == 2
     assert parts == []
     assert "COMMENTARY on TikTok.mp4" in mp4s
-    assert any("[2222222222222222222]" in n for n in mp4s)
-
-    # 内容完整性：无字节交错损坏（哈希比较，避免 pytest 对大字节串 diff）
-    with open(out / "COMMENTARY on TikTok.mp4", "rb") as f:
-        assert _sha(f.read()) == _sha(DATA_A)
+    # 去重名携带的 video_id 取决于线程调度顺序（谁先占名谁用干净名），
+    # 因此断言须对称：另一个文件应携带任一 video_id 后缀。
     other = [n for n in mp4s if n != "COMMENTARY on TikTok.mp4"][0]
+    assert "[1111111111111111111]" in other or "[2222222222222222222]" in other
+
+    # 内容完整性：无字节交错损坏（哈希比较，避免 pytest 对大字节串 diff）。
+    # 干净名文件的归属由线程调度决定，按 other 的 video_id 反推。
+    vid_b_suffix = "[2222222222222222222]"
+    with open(out / "COMMENTARY on TikTok.mp4", "rb") as f:
+        clean_hash = _sha(f.read())
     with open(out / other, "rb") as f:
-        assert _sha(f.read()) == _sha(DATA_B)
+        other_hash = _sha(f.read())
+    if vid_b_suffix in other:
+        # other = work_b → 干净名 = work_a
+        assert clean_hash == _sha(DATA_A)
+        assert other_hash == _sha(DATA_B)
+    else:
+        # other = work_a → 干净名 = work_b
+        assert clean_hash == _sha(DATA_B)
+        assert other_hash == _sha(DATA_A)
 
 
 def test_claim_release_registry():

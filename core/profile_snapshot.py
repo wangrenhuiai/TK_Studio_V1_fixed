@@ -22,7 +22,9 @@ import shutil
 import time
 
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# FIX-EXE.1：profile/快照目录使用用户可写数据根目录（EXE 时 %LOCALAPPDATA%\TK_Studio）。
+from core.paths import get_app_data_root
+_PROJECT_ROOT = get_app_data_root()
 
 # Profile 目录
 LOGIN_PROFILE_DIR = os.path.join(_PROJECT_ROOT, "chrome_login_profile")

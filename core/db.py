@@ -17,11 +17,11 @@ import os
 import sqlite3
 from datetime import datetime
 
+from core.paths import get_app_data_root
 
-DB_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "tk_studio.db"
-)
+# FIX-EXE.1：EXE 环境下 DB 写入 %LOCALAPPDATA%\TK_Studio（用户可写），
+# 开发环境保持项目根目录不变。
+DB_FILE = os.path.join(get_app_data_root(), "tk_studio.db")
 
 
 class Database:

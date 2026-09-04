@@ -18,8 +18,9 @@ import subprocess
 import urllib.request
 
 
-# 项目根目录（core/home_fetcher.py 的上一级）
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# FIX-EXE.1：profile 目录使用用户可写数据根目录（EXE 时 %LOCALAPPDATA%\TK_Studio）。
+from core.paths import get_app_data_root
+_PROJECT_ROOT = get_app_data_root()
 
 # 复用 chrome_bridge 的 Chrome 路径查找逻辑（只读引用，不修改 chrome_bridge）
 def _find_chrome():
