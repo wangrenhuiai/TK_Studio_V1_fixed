@@ -12,6 +12,7 @@ Phase 5-B.1.1
 7. 向 MainWindow 转发任务状态
 """
 
+import time
 from collections import deque
 
 from PySide6.QtCore import QObject, Signal
@@ -339,12 +340,21 @@ class TaskManager(QObject):
         if task["status"] != "下载中":
             return
 
-        self.db.update_download_task(
-            task_id,
-            status="下载中",
-            progress=progress,
-            message=message,
-        )
+        # 进度写库节流：downloader 每 512KB chunk 触发一次本回调，
+        # 进度变化 ≥1% 或距上次写库 ≥2s 才落库，避免 SQLite 写放大；
+        # 终态在 _on_finished/_on_failed 中立即写库，不受节流影响。
+        now = time.monotonic()
+        last_pct = task.get("_db_pct", -1)
+        last_ts = task.get("_db_ts", 0.0)
+        if progress - last_pct >= 1 or now - last_ts >= 2.0:
+            self.db.update_download_task(
+                task_id,
+                status="下载中",
+                progress=progress,
+                message=message,
+            )
+            task["_db_pct"] = progress
+            task["_db_ts"] = now
 
         self.progress.emit(
             work_id,
@@ -504,6 +514,14 @@ class TaskManager(QObject):
     # ==========================================================
 
     def shutdown(self):
+        """程序关闭时的任务回收（与 Phase 3.13 语义一致）。
+
+        - 等待中任务：从未创建 Worker，直接标记「取消」；
+        - 下载中任务：先同步把 works 表标记为「下载失败」（不依赖线程退出后
+          写库，因为进程随即退出会终止 QThread），download_tasks 标记「取消」，
+          再请求 Worker 协作式取消；
+        - 不等待线程结束，不调用 terminate。
+        """
 
         self._shutdown = True
 
@@ -533,9 +551,37 @@ class TaskManager(QObject):
 
         self.waiting_queue.clear()
 
-        # 正在运行的 Worker 协作式取消。
-        for worker in list(self.running_workers.values()):
+        # 正在运行的任务：同步标记后协作式取消。
+        for task_id, worker in list(self.running_workers.items()):
+
+            task = self.tasks.get(task_id)
+
+            if task is not None:
+
+                task["status"] = "取消"
+
+                try:
+                    self.db.update_download(
+                        task["work_id"],
+                        "下载失败",
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    self.db.update_download_task(
+                        task_id,
+                        status="取消",
+                        message="程序关闭",
+                    )
+                except Exception:
+                    pass
+
             try:
                 worker.cancel()
             except Exception:
                 pass
+
+        self.running_workers.clear()
+
+        self.state_changed.emit()

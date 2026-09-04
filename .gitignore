@@ -1,25 +1,47 @@
-# 浏览器配置文件（含 Cookies / 登录凭据 / 浏览历史等敏感数据）
-chrome_*profile*/
-
-# 数据库
-*.db
-*.rar
-
-# 运行时缓存
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# 运行时数据
+data/
+*.db
+*.db-journal
+*.snapshot.json
+
+# Chrome profiles
+chrome_*_profile/
+chrome_cdp_profile_anon/
 
 # 备份文件
-*.bak*
+*.bak
+*.bak_*
+*.rar
 
-# 调试/探针数据
-data/
-
-# 误产生的空文件 / 垃圾文件
+# 杂项（非项目文件）
 13.0
 26.2.1
-py
 TikTokpy
+py
 yt-dlp
 ↓
 浏览器
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# 日志
+*.log

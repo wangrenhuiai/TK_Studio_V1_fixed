@@ -5,17 +5,20 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QStackedWidget, QLabel, QPushButton,
     QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
-    QProgressBar, QFileDialog, QTextEdit, QFrame
+    QProgressBar, QFileDialog, QTextEdit, QFrame, QCheckBox
 )
 
 from core.db import Database, get_latest_work_id
 from core.chrome_bridge import chrome_render_with_cookies
 from core.tiktok_service import parse_url
-from workers.download_worker import DownloadWorker
 from workers.task_manager import TaskManager
 from workers.parse_worker import ParseWorker
 from workers.login_worker import LoginWorker
+from workers.home_fetch_worker import HomeFetchWorker
+from workers.resolve_worker import ResolveWorker
 from core.tiktok_login import LoginState, TikTokLogin
+from core.profile_snapshot import snapshot_login_to_auth, delete_auth_profile
+from core.url_resolver import resolve_short_url, is_short_url
 
 # 下载并发上限：达到后直接提示，不排队（Phase 3.2 策略）。
 MAX_CONCURRENT_DOWNLOADS = 3
@@ -151,16 +154,30 @@ class MainWindow(QMainWindow):
             self.db.reset_downloading_to_failed()
         except Exception:
             pass
-        # work_id -> DownloadWorker，统一管理所有运行中的下载任务。
-        self.active_workers = {}
+        # B1：下载任务管理器（等待队列 + 并发上限 + Worker 生命周期/取消/自动补位）。
+        self.task_manager = TaskManager(self.db, MAX_CONCURRENT_DOWNLOADS)
+        self.task_manager.progress.connect(self._on_dl_progress)
+        self.task_manager.finished_ok.connect(self._on_dl_finished)
+        self.task_manager.failed.connect(self._on_dl_failed)
+        self.task_manager.state_changed.connect(self._sync_download_ui)
         # 单作品解析 Worker：同一时刻只允许一个解析任务。
         self._parse_worker = None
         # 本次解析的 URL 列表，用于竞态校验（旧结果不得覆盖当前输入）。
         self._parse_token = None
+        # C1 方案 B: 短链解析后台 Worker（同一时刻只允许一个）。
+        self._resolve_worker = None
+        # 短链解析阶段暂存的原始 URL 列表，解析完成后用于后续 tiktok.com / /video/ 校验。
+        self._pending_urls = None
         # TikTok 登录 Worker：同一时刻只允许一个登录会话。
         self._login_worker = None
+        # B3.4: 登录成功标志，由 _on_login_success 置位，_on_login_worker_finished
+        # 读取并触发 profile snapshot 后清零。不在 _on_login_success 直接 snapshot，
+        # 因此时 LoginWorker.shutdown() 可能尚未完成（Chrome 未释放 profile 锁）。
+        self._login_succeeded = False
         # TikTok 登录态检查 Worker（M5）：启动时一次性 headless 检查。
         self._login_check_worker = None
+        # 主页抓取 Worker（B2.2-B）：同一时刻只允许一个主页抓取任务。
+        self._home_worker = None
         self.setWindowTitle("TK Studio V1.6.4 - TikTok作品管理工具")
         self.resize(1180, 760)
         self.setMinimumSize(980, 650)
@@ -277,7 +294,7 @@ class MainWindow(QMainWindow):
             op_layout.setContentsMargins(4, 2, 4, 2)
             op_layout.setSpacing(4)
 
-            is_downloading = work_id in self.active_workers
+            is_downloading = self.task_manager.is_busy(work_id)
 
             dl_btn = QPushButton("取消" if is_downloading else "下载")
             dl_btn.setFixedWidth(54)
@@ -304,27 +321,23 @@ class MainWindow(QMainWindow):
         self.download_current_work()
 
     def _download_or_cancel_work(self, work_id):
-        """列表按钮统一入口：下载中则取消，否则启动下载。"""
-        if work_id in self.active_workers:
+        """列表按钮统一入口：排队中/下载中则取消，否则启动下载。"""
+        if self.task_manager.is_busy(work_id):
             self.cancel_download(work_id)
         else:
             self.download_row_work(work_id)
 
     def cancel_download(self, work_id):
-        """请求取消指定作品的下载。
+        """请求取消指定作品的下载/排队任务（委托 TaskManager）。
 
-        仅置位 Worker 的取消标志，由下载循环在检查点主动退出，
-        然后走 failed → finished → deleteLater 既有 cleanup 链。
-        不直接从 active_workers 移除，也不手动杀线程。
+        下载中：由下载循环在检查点主动退出（不杀线程）；
+        排队中：直接出队并标记取消。UI 不再直接持有 Worker。
         """
-        worker = self.active_workers.get(work_id)
-        if worker is None:
-            return
-        worker.cancel()
+        self.task_manager.cancel(work_id)
 
     def delete_row_work(self, work_id):
-        # 下载中的作品禁止删除，避免 DB 记录与 Worker/本地文件不一致。
-        if work_id in self.active_workers:
+        # 排队中/下载中的作品禁止删除，避免 DB 记录与 Worker/本地文件不一致。
+        if self.task_manager.is_busy(work_id):
             QMessageBox.information(
                 self,
                 "提示",
@@ -373,8 +386,107 @@ class MainWindow(QMainWindow):
         start = QPushButton("开始提取主页"); start.setObjectName("green")
         row.addWidget(start)
         cv.addLayout(row)
+
+        # B3.2：profile 模式选择。默认不勾选 = 匿名抓取（profile_dir=None，
+        # 走 chrome_home_fetcher_profile，B3.1 基线行为不变）；
+        # 勾选 = 复用登录态（profile_dir=chrome_home_auth_profile）。
+        self.home_auth_checkbox = QCheckBox(
+            "复用登录态（需先在「浏览器/登录 TK」页扫码登录）"
+        )
+        cv.addWidget(self.home_auth_checkbox)
+
         v.addWidget(card)
-        self.add_log(v)
+        log = self.add_log(v)
+
+        self.home_edit = edit
+        self.home_log = log
+        self.home_start_btn = start
+        # B2.2-B：接线主页抓取按钮（后台线程，不阻塞 UI）。
+        start.clicked.connect(self.start_home_fetch)
+
+    def start_home_fetch(self):
+        """主页抓取按钮入口：启动后台抓取（B2.2-B，不阻塞 UI）。
+
+        输入支持完整主页 URL 或纯用户名，逐行解析；HomeWorker(B2.1) 在
+        后台线程执行，结果通过信号回主线程。
+
+        B3.2：根据 ``home_auth_checkbox`` 选择 profile 模式：
+        - 未勾选（默认）：匿名抓取，profile_dir=None（走
+          chrome_home_fetcher_profile，B3.1 基线行为不变）
+        - 勾选：复用登录态，profile_dir=chrome_home_auth_profile
+          （需先扫码登录建立该 profile，B3.3 将实现 login_success
+          快照填充；当前若 profile 不存在则由 HomeFetcher 自动 makedirs
+          创建空目录，等同匿名，不会崩溃）
+        """
+        text = self.home_edit.toPlainText().strip()
+        if not text:
+            QMessageBox.warning(self, "提示", "请先输入 TikTok 主页地址或用户名。")
+            return
+
+        # 防重入：已有 HomeFetchWorker 运行时直接返回。
+        if self._home_worker is not None:
+            return
+
+        urls = [x.strip() for x in text.splitlines() if x.strip()]
+        if not urls:
+            QMessageBox.warning(self, "提示", "没有有效的主页地址。")
+            return
+
+        # B3.2：根据复选框决定 profile_dir。
+        if self.home_auth_checkbox.isChecked():
+            profile_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "chrome_home_auth_profile",
+            )
+        else:
+            profile_dir = None  # 匿名（默认，B3.1 基线）
+
+        self.home_log.clear()
+        if profile_dir is not None:
+            self.home_log.append("ℹ️ 复用登录态模式：chrome_home_auth_profile")
+        self.home_start_btn.setEnabled(False)
+        self.home_start_btn.setText("抓取中...")
+
+        worker = HomeFetchWorker(urls, source="tiktok", profile_dir=profile_dir)
+        self._home_worker = worker
+        worker.home_success.connect(self._on_home_success)
+        worker.home_failed.connect(self._on_home_failed)
+        worker.log.connect(self._on_home_log)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._on_home_finished)
+        worker.start()
+
+    def _on_home_success(self, result):
+        """主页抓取成功回调（主线程）。展示该主页的视频 URL 列表。"""
+        username = result.get("username", "")
+        count = result.get("count", 0)
+        urls = result.get("urls", [])
+        self.home_log.append(
+            f"✅ @{username or '?'} 抓取到 {count} 条视频："
+        )
+        for u in urls:
+            self.home_log.append(f"  {u}")
+
+    def _on_home_failed(self, error):
+        """主页抓取失败回调（主线程）。"""
+        self.home_log.append(f"❌ 抓取失败：{error}")
+
+    def _on_home_log(self, msg):
+        """主页抓取日志回调（主线程）。"""
+        self.home_log.append(str(msg))
+
+    def _on_home_finished(self):
+        """HomeFetchWorker 结束回调（主线程）。清理状态并恢复按钮。
+
+        try/finally 保证追加日志抛异常时也能释放引用并恢复按钮，避免
+        按钮卡死、Worker 引用泄漏导致后续抓取被永久拒绝。
+        """
+        try:
+            self.home_log.append("✅ 主页抓取任务完成。")
+        finally:
+            self._home_worker = None
+            self.home_start_btn.setEnabled(True)
+            self.home_start_btn.setText("开始提取主页")
 
     def build_single(self):
         w, v = self.page("单作品提取")
@@ -438,14 +550,79 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请先粘贴 TikTok 单作品 URL。")
             return
 
-        # 防止重复解析：已有 ParseWorker 运行时直接返回。
+        # 防止重复解析：已有 ParseWorker 或 ResolveWorker 运行时直接返回。
         if self._parse_worker is not None:
+            return
+        if self._resolve_worker is not None:
             return
 
         urls = [x.strip() for x in text.splitlines() if x.strip()]
         self.single_log.clear()
         self.single_result.clear()
 
+        # C1 方案 B: 短链解析移入后台线程，避免批量短链卡 UI。
+        # 先快速检查是否有短链；全非短链则跳过 ResolveWorker 直接校验。
+        has_short = any(is_short_url(u) for u in urls)
+        if not has_short:
+            # 无短链，直接走校验 + ParseWorker（与原流程一致）。
+            self._validate_and_parse(urls)
+            return
+
+        # 有短链：启动 ResolveWorker 后台解析。
+        self.single_parse_btn.setEnabled(False)
+        self.single_parse_btn.setText("解析中...")  # C3: 与 home_start_btn 文本反馈一致
+        self._pending_urls = list(urls)
+        worker = ResolveWorker(urls)
+        self._resolve_worker = worker
+        worker.log.connect(self.single_log.append)
+        worker.resolved.connect(self._on_url_resolved)
+        worker.finished_ok.connect(self._on_resolve_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._on_resolve_worker_finished)
+        worker.start()
+        # 立即返回主线程，不阻塞 UI。
+
+    def _on_url_resolved(self, item):
+        """ResolveWorker 逐条解析回调（主线程）。展示短链转换结果。"""
+        original = item.get("original", "")
+        resolved = item.get("resolved", "")
+        changed = item.get("changed", False)
+        if changed and "/video/" in resolved.lower():
+            self.single_log.append("🔗 TikTok短链解析:")
+            self.single_log.append("原始:")
+            self.single_log.append(original)
+            self.single_log.append("解析:")
+            self.single_log.append(resolved)
+        elif item.get("success") is False and original != resolved:
+            # 短链但解析未变化 → 视为失败
+            self.single_log.append("⚠️ TikTok短链解析失败，保留原URL")
+
+    def _on_resolve_finished(self, results):
+        """ResolveWorker 全部完成回调（主线程）。汇总后走校验 + ParseWorker。"""
+        if self._pending_urls is None:
+            return
+        # 用解析结果替换原 URL（仅成功转换为 /video/ 的）
+        resolved_urls = []
+        for item in results:
+            original = item.get("original", "")
+            resolved = item.get("resolved", "")
+            changed = item.get("changed", False)
+            if changed and "/video/" in resolved.lower():
+                resolved_urls.append(resolved)
+            else:
+                resolved_urls.append(original)
+        self._pending_urls = None
+        self._validate_and_parse(resolved_urls)
+
+    def _on_resolve_worker_finished(self):
+        """ResolveWorker 线程结束清理（主线程）。释放引用。"""
+        self._resolve_worker = None
+
+    def _validate_and_parse(self, urls):
+        """URL 校验（tiktok.com / /video/）+ 启动 ParseWorker。
+
+        从 parse_single 和 _on_resolve_finished 调用，统一后续流程。
+        """
         valid_urls = []
         for url in urls:
             if "tiktok.com" not in url.lower():
@@ -458,6 +635,8 @@ class MainWindow(QMainWindow):
 
         if not valid_urls:
             self.single_log.append("没有找到可以解析的 TikTok 单作品 URL。")
+            self.single_parse_btn.setEnabled(True)
+            self.single_parse_btn.setText("开始解析")  # C3: 无效 URL 时恢复按钮文本
             return
 
         # 记录本次解析 token，用于竞态校验。
@@ -465,6 +644,7 @@ class MainWindow(QMainWindow):
 
         # 禁用解析按钮，避免重复点击。
         self.single_parse_btn.setEnabled(False)
+        self.single_parse_btn.setText("解析中...")  # C3: 进入 ParseWorker 时保持文本
 
         # 把阻塞性解析流程移到后台线程。
         worker = ParseWorker(valid_urls, self.db)
@@ -547,10 +727,11 @@ class MainWindow(QMainWindow):
             self._parse_token = None
             self._parse_worker = None
             self.single_parse_btn.setEnabled(True)
+            self.single_parse_btn.setText("开始解析")  # C3: 完成时恢复按钮文本
 
     def _single_download_or_cancel(self):
-        """单作品页按钮入口：下载中则取消当前作品，否则启动下载。"""
-        if self.current_work_id and self.current_work_id in self.active_workers:
+        """单作品页按钮入口：排队中/下载中则取消当前作品，否则启动下载。"""
+        if self.current_work_id and self.task_manager.is_busy(self.current_work_id):
             self.cancel_download(self.current_work_id)
         else:
             self.download_current_work()
@@ -574,35 +755,27 @@ class MainWindow(QMainWindow):
     def _sync_download_ui(self):
         """同步下载相关 UI 状态。
 
-        active_workers 是唯一真实任务状态来源。
-        - 刷新作品列表（按钮文本/enabled 由 refresh_work_list 根据 active_workers 决定）
-        - 同步单作品页按钮：当前作品正在下载时显示"取消下载"，否则"下载当前作品"
+        TaskManager 是唯一真实任务状态来源（排队中/下载中均视为忙碌）。
+        - 刷新作品列表（按钮文本/enabled 由 refresh_work_list 根据 is_busy 决定）
+        - 同步单作品页按钮：当前作品排队/下载中时显示"取消下载"，否则"下载当前作品"
         """
         self.refresh_work_list()
         if hasattr(self, "single_download_btn") and self.current_work_id is not None:
-            downloading = self.current_work_id in self.active_workers
+            downloading = self.task_manager.is_busy(self.current_work_id)
             self.single_download_btn.setText("取消下载" if downloading else "下载当前作品")
             self.single_download_btn.setEnabled(True)
 
     def _start_download_worker(self, work_id, source="single"):
-        """统一下载入口：互斥检查、并发上限、Worker 注册与信号路由。
+        """统一下载入口：校验后委托 TaskManager 入队（B1）。
 
         单作品下载（source="single"）和作品列表/最新下载（source="latest"）
-        共用此方法，保证任务管理逻辑只有一份。
+        共用此方法。互斥、排队（超过并发上限自动进入等待并自动补位）、
+        Worker 创建/回收/取消全部由 TaskManager 负责。
         """
-        # 互斥：同一作品下载期间只允许一个 Worker。
-        if work_id in self.active_workers:
+        # 互斥：同一作品排队中或下载中不重复入队。
+        if self.task_manager.is_busy(work_id):
             QMessageBox.information(
-                self, "提示", "该作品正在下载中，请稍候。"
-            )
-            return
-
-        # 并发上限：达到后直接提示，不排队。
-        if len(self.active_workers) >= MAX_CONCURRENT_DOWNLOADS:
-            QMessageBox.information(
-                self, "提示",
-                f"当前下载任务已达上限（{MAX_CONCURRENT_DOWNLOADS} 个），"
-                "请等待部分任务完成后再试。"
+                self, "提示", "该作品正在下载或排队中，请稍候。"
             )
             return
 
@@ -624,28 +797,9 @@ class MainWindow(QMainWindow):
             output_dir = os.path.expanduser("~/Downloads/TK_Studio")
             self.download_path_edit.setText(output_dir)
 
-        worker = DownloadWorker(work_id, video_url, output_dir, self.db)
-        # 先注册再连接信号/启动，确保 start 后立即可被 active_workers 追踪。
-        self.active_workers[work_id] = worker
-
-        # 用闭包绑定 work_id，使多任务回调可区分来源并正确清理。
-        worker.progress.connect(
-            lambda p, s, m, wid=work_id: self._on_dl_progress(wid, p, s, m, source)
-        )
-        worker.finished_ok.connect(
-            lambda path, wid=work_id: self._on_dl_finished(wid, path, source)
-        )
-        worker.failed.connect(
-            lambda err, wid=work_id: self._on_dl_failed(wid, err, source)
-        )
-        # 兜底：QThread 自然结束时无论如何移除注册，防止并发槽被永久占用。
-        # deleteLater 确保 QThread 对象在 finished 后被销毁，避免内存累积。
-        worker.finished.connect(worker.deleteLater)
-        worker.finished.connect(
-            lambda wid=work_id: self.active_workers.pop(wid, None)
-        )
-        worker.start()
-        # 立即同步 UI：禁用对应作品的下载按钮。
+        # 超过并发上限的任务进入等待队列，任务完成后由 TaskManager 自动补位。
+        self.task_manager.enqueue(work_id, video_url, output_dir, source=source)
+        # 立即同步 UI：按钮切换为取消态。
         self._sync_download_ui()
 
     def _on_dl_progress(self, work_id, percent, status, message, source):
@@ -658,7 +812,6 @@ class MainWindow(QMainWindow):
             self.download_progress.setValue(percent)
 
     def _on_dl_finished(self, work_id, path, source):
-        self.active_workers.pop(work_id, None)
         self._sync_download_ui()
         if source == "single":
             self.single_log.append(f"✅ 下载完成：{path}")
@@ -670,7 +823,6 @@ class MainWindow(QMainWindow):
         )
 
     def _on_dl_failed(self, work_id, error, source):
-        self.active_workers.pop(work_id, None)
         self._sync_download_ui()
         # 区分用户主动取消与普通失败：取消不弹"下载失败"警告。
         if error == "用户取消下载":
@@ -902,6 +1054,8 @@ class MainWindow(QMainWindow):
         if ok:
             self.login_status_label.setText("状态：未登录")
             self._append_login_log("登出完成")
+            # B3.4: 同步清理 auth profile 快照，避免残留过期登录态。
+            delete_auth_profile(log_callback=self._append_login_log)
         else:
             self._append_login_log("登出失败")
 
@@ -923,18 +1077,35 @@ class MainWindow(QMainWindow):
         """登录成功回调（主线程）。"""
         self.login_status_label.setText("状态：已登录")
         self._append_login_log("登录成功！")
+        # B3.4: 置位成功标志，snapshot 在 _on_login_worker_finished 执行
+        # （此时 shutdown 可能未完成，Chrome 尚未释放 profile 锁）。
+        self._login_succeeded = True
 
     def _on_login_failed(self, reason):
         """登录失败/超时/取消回调（主线程）。"""
         if "取消" in reason:
             self.login_status_label.setText("状态：未登录")
         self._append_login_log(f"登录失败：{reason}")
+        # B3.4: 失败/取消时清零标志，避免 finished 误触发 snapshot。
+        self._login_succeeded = False
 
     def _on_login_worker_finished(self):
         """Worker 结束后恢复按钮状态（主线程）。"""
         self.login_btn.setEnabled(True)
         self.login_btn.setText("扫码登录")
         self._login_worker = None
+        # B3.4: shutdown() 已完成（Chrome 释放 profile 锁），可安全快照。
+        if self._login_succeeded:
+            result = snapshot_login_to_auth(
+                log_callback=self._append_login_log
+            )
+            if result["success"]:
+                self._append_login_log("登录态已同步至主页抓取 profile")
+            else:
+                self._append_login_log(
+                    f"登录态同步失败：{result['error']}（主页将用匿名模式）"
+                )
+        self._login_succeeded = False
 
     def _append_login_log(self, msg):
         """追加一条登录日志。"""
@@ -982,13 +1153,18 @@ class MainWindow(QMainWindow):
         - 有登录任务：询问用户；取消则不关闭；确认则通知 LoginWorker 取消
           并有界等待（上限 8s）其执行 shutdown/Browser.close 优雅关闭
           Chrome（Profile 保留）；超时则随进程退出终止 QThread。
+        - 有主页抓取任务：询问用户；取消则不关闭；确认则直接退出
+          （依赖进程退出终止 QThread，与解析任务一致；HomeFetcher 启动的
+          Chrome 子进程可能残留，留待后续 Phase 处理）。
         """
         # 先检查解析 Worker：与下载任务对称处理。
         parse_running = (
             self._parse_worker is not None
             and self._parse_worker.isRunning()
         )
-        download_count = len(self.active_workers)
+        download_running = self.task_manager.running_count()
+        download_waiting = self.task_manager.waiting_count()
+        download_count = download_running + download_waiting
         login_running = (
             self._login_worker is not None
             and self._login_worker.isRunning()
@@ -998,8 +1174,18 @@ class MainWindow(QMainWindow):
             self._login_check_worker is not None
             and self._login_check_worker.isRunning()
         )
+        # B2.2-B: 主页抓取 Worker 运行中（依赖进程退出终止 QThread，与解析一致）。
+        home_running = (
+            self._home_worker is not None
+            and self._home_worker.isRunning()
+        )
+        # C1 方案 B: 短链解析 Worker 运行中（依赖进程退出终止 QThread，与解析一致）。
+        resolve_running = (
+            self._resolve_worker is not None
+            and self._resolve_worker.isRunning()
+        )
 
-        if not parse_running and not download_count and not login_running:
+        if not parse_running and not download_count and not login_running and not home_running and not resolve_running:
             if not check_running:
                 event.accept()
                 return
@@ -1017,12 +1203,19 @@ class MainWindow(QMainWindow):
         if parse_running:
             msgs.append("当前有解析任务正在进行中。\n退出将中断解析。")
         if download_count:
+            detail = f"{download_running} 个下载中"
+            if download_waiting:
+                detail += f"、{download_waiting} 个排队中"
             msgs.append(
-                f"当前有 {download_count} 个下载任务正在进行中。\n"
-                "退出将中断这些下载，任务状态将被标记为「下载失败」。"
+                f"当前有 {download_count} 个下载任务（{detail}）。\n"
+                "退出将中断这些下载：下载中的标记为「下载失败」，排队中的标记为取消。"
             )
         if login_running:
             msgs.append("当前有 TikTok 登录会话正在进行中。\n退出将关闭浏览器（登录态保留）。")
+        if home_running:
+            msgs.append("当前有主页抓取任务正在进行中。\n退出将中断抓取。")
+        if resolve_running:
+            msgs.append("当前有短链解析任务正在进行中。\n退出将中断解析。")
         reply = QMessageBox.question(
             self, "确认退出",
             "\n\n".join(msgs) + "\n\n确定要退出吗？",
@@ -1033,18 +1226,11 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
 
-        # 先通知下载 Worker 取消，再标记下载失败，最后移除注册并关闭。
-        # ParseWorker 无 DB 副作用需标记，依赖进程退出终止（与 Phase 3.13 一致）。
-        for wid, worker in list(self.active_workers.items()):
-            try:
-                worker.cancel()
-            except Exception:
-                pass
-            try:
-                self.db.update_download(wid, "下载失败")
-            except Exception:
-                pass
-            self.active_workers.pop(wid, None)
+        # 下载任务统一委托 TaskManager 回收：排队任务标记取消；下载中任务
+        # 同步把 works 标记为「下载失败」后请求 Worker 协作取消（不等待线程，
+        # 进程退出终止 QThread，与 Phase 3.13 语义一致）。
+        # ParseWorker 无 DB 副作用需标记，依赖进程退出终止。
+        self.task_manager.shutdown()
         # M5: 静默回收启动期 headless 登录态检查的 Chrome（有界等待）。
         if check_running:
             try:

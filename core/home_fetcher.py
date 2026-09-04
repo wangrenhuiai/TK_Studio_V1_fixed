@@ -44,7 +44,8 @@ class HomeFetcher:
     """
 
     def fetch(self, url, log_callback=None,
-              max_scrolls=3, initial_wait=15, scroll_wait=8):
+              max_scrolls=3, initial_wait=15, scroll_wait=8,
+              profile_dir=None):
         """获取主页作品 URL 列表。
 
         Args:
@@ -53,6 +54,11 @@ class HomeFetcher:
             max_scrolls: 最大滚动次数（默认 3）
             initial_wait: 初始页面等待秒数（默认 15）
             scroll_wait: 每次滚动后等待秒数（默认 4）
+            profile_dir: 可选 Chrome user-data-dir 路径（默认 None
+                使用 chrome_home_fetcher_profile 匿名 profile；认证
+                模式由调用方传入 chrome_home_auth_profile 等持久化目录）。
+                注意：此参数指 Chrome --user-data-dir，与 _start_chrome_cdp
+                的 profile_directory="Default"（子 profile 名）不同。
 
         Returns:
             list[str]: 去重后的 video URL 列表，保持首次出现顺序
@@ -73,15 +79,17 @@ class HomeFetcher:
         if not chrome_path:
             raise RuntimeError("未找到 Chrome 可执行文件")
 
-        # 2. 使用项目目录下固定 profile（累积 WAF cookie，避免每次被 challenge 拦截）
-        tmp_profile = os.path.join(_PROJECT_ROOT, "chrome_home_fetcher_profile")
-        os.makedirs(tmp_profile, exist_ok=True)
-        self._log(log_callback, f"使用 profile：{tmp_profile}")
+        # 2. Chrome user-data-dir：默认匿名 profile（累积 WAF cookie），
+        #    认证模式由调用方传入 profile_dir 复用登录态。
+        if profile_dir is None:
+            profile_dir = os.path.join(_PROJECT_ROOT, "chrome_home_fetcher_profile")
+        os.makedirs(profile_dir, exist_ok=True)
+        self._log(log_callback, f"使用 profile：{profile_dir}")
 
         proc = None
         ws = None
         try:
-            proc, ws, cdp = self._start_chrome_cdp(chrome_path, tmp_profile, "Default")
+            proc, ws, cdp = self._start_chrome_cdp(chrome_path, profile_dir, "Default")
 
             # 3. 页面加载
             self._log(log_callback, f"加载页面，等待 {initial_wait}s...")
