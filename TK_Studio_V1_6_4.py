@@ -1144,13 +1144,14 @@ class MainWindow(QMainWindow):
         t = QTextEdit()
         t.setReadOnly(True)
         t.setPlainText(
-            "TK Studio V1.4\n\n"
-            "1. 主页提取：输入主页 URL。\n"
-            "2. 单作品提取：输入视频 URL。\n"
-            "3. 关键词提取：输入关键词并搜索。\n"
-            "4. 下载设置：设置本地保存目录。\n\n"
-            "当前版本主要完成桌面 GUI 和任务管理框架。\n"
-            "TikTok 数据采集、解析和下载引擎将在后续版本接入。"
+            "TK Studio V1.6.4\n\n"
+            "1. 主页提取：输入主页 URL，支持批量提取主页视频列表。\n"
+            "2. 单作品提取：输入视频 URL，支持短链自动解析。\n"
+            "3. 关键词提取：输入关键词搜索相关作品。\n"
+            "4. 下载设置：设置本地保存目录，支持批量下载与断点续传。\n"
+            "5. 浏览器/登录 TK：扫码登录 TikTok，复用登录态抓取主页。\n\n"
+            "支持 TikTok 短链解析、Chrome CDP 渲染、断点续传下载、"
+            "并发下载任务管理等特性。"
         )
         v.addWidget(t)
 

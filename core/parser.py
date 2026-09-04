@@ -15,10 +15,15 @@ def _clean_tiktok_value(value):
     value = unquote(value)
     value = value.replace("\\u002F", "/").replace("\\/", "/")
     value = value.replace("&amp;", "&")
-    try:
-        value = bytes(value, "utf-8").decode("unicode_escape")
-    except Exception:
-        pass
+    # 安全处理剩余的 \uXXXX 转义序列。
+    # 旧实现 bytes(value, "utf-8").decode("unicode_escape") 会把 UTF-8 多字节
+    # 字符（如中文、emoji）拆成单字节再解码，导致乱码。
+    # 改用正则只替换 \uXXXX 转义序列，不影响已解码的 Unicode 字符。
+    value = re.sub(
+        r'\\u([0-9a-fA-F]{4})',
+        lambda m: chr(int(m.group(1), 16)),
+        value
+    )
     return value.strip()
 
 

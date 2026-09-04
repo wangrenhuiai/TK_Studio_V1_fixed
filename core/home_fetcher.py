@@ -239,7 +239,8 @@ class HomeFetcher:
         # 构建完整 URL
         # 从 base_url 提取 @username 部分
         # 例如 https://www.tiktok.com/@tiktok → @tiktok
-        username_match = re.search(r'@([\w.-]+)', base_url)
+        # 使用 tiktok.com/@ 前缀锚定，避免匹配到 URL 中非用户名部分的 @
+        username_match = re.search(r'tiktok\.com/@([\w.-]+)', base_url, re.I)
         username = username_match.group(1) if username_match else "unknown"
 
         urls = [

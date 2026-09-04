@@ -277,9 +277,10 @@ def _try_get(session, url, timeout, log_callback):
     try:
         resp = session.get(url, allow_redirects=True, timeout=timeout,
                            stream=True)
-        final_url = resp.url
-        resp.close()
-        return final_url
+        try:
+            return resp.url
+        finally:
+            resp.close()
     except requests.Timeout:
         _log(log_callback, f"短链解析超时（{timeout}s），保留原 URL")
         return None

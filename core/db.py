@@ -36,9 +36,14 @@ class Database:
         # - timeout=5：sqlite3.connect 层面 busy timeout（秒）
         # - PRAGMA busy_timeout=5000：SQLite 层面 busy timeout（毫秒）
         # - PRAGMA journal_mode=WAL：写不阻塞读，并发性能提升
+        # 注意：sqlite3.Connection.__exit__ 只做 commit/rollback，
+        # 不会关闭连接。调用方必须显式关闭，否则连接泄漏。
+        # 推荐使用 contextlib.closing(self.connect()) 或手动 close()。
         con = sqlite3.connect(self.path, timeout=5)
         con.execute("PRAGMA busy_timeout=5000")
         con.execute("PRAGMA journal_mode=WAL")
+        # row_factory 设为 Row，支持按列名访问，避免硬编码索引
+        con.row_factory = sqlite3.Row
         return con
 
 
@@ -404,9 +409,9 @@ class Database:
 
             """,
             (
-                status if status is not None else row[3],
-                progress if progress is not None else row[4],
-                message if message is not None else row[5],
+                status if status is not None else row["status"],
+                progress if progress is not None else row["progress"],
+                message if message is not None else row["message"],
                 now,
                 task_id
             ))
