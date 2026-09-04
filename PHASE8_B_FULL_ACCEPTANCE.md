@@ -2,8 +2,8 @@
 
 - 验收时间：2026-09-04
 - 验收性质：只读测试（禁止修改代码）
-- 基线：commit 0d3810b（FIX-DB.1 + Phase 8-A）
-- 测试脚本：`tests/phase8b_func_test.py` + 全量回归
+- 基线：commit 1da638c（Phase 8-B Python 模式 + EXE 重新构建）
+- 测试脚本：`tests/phase8b_func_test.py` + 全量回归 + EXE 环境验收
 
 ---
 
@@ -19,8 +19,9 @@
 | 6 | Chrome CDP 集成 | ✅ | (模块验证) | ✅ PASS |
 | 7 | 主页服务链路 | ✅ | (模块验证) | ✅ PASS |
 | — | **全量回归** | — | **122 passed** | ✅ PASS |
+| — | **EXE 环境验收** | — | 5/5 PASS | ✅ PASS |
 
-**总体结论：通过。** 全部功能链路模块完整、接口可调用、单元测试全通过。
+**总体结论：通过。** 全部功能链路模块完整、接口可调用、单元测试全通过。EXE 环境下数据目录、SQLite WAL、Chrome profile 路径全部正确。
 
 ---
 
@@ -176,8 +177,30 @@ python -m pytest tests/ -q --tb=no
 
 ---
 
+## EXE 环境验收（Phase 8-B 补充）
+
+基于重新构建的 EXE（含 FIX-EXE.1 + FIX-DB.1 + FIX-DL.1），在真实 EXE 运行环境下验证。
+
+| # | 验收项 | 结果 |
+|---|---|---|
+| 1 | EXE 启动 | ✅ PASS（PID=2324, 115.3MB, 运行稳定） |
+| 2 | 数据目录创建 | ✅ PASS（`%LOCALAPPDATA%\TK_Studio` 自动创建） |
+| 3 | SQLite 初始化 | ✅ PASS（WAL 模式 + busy_timeout=5000ms + works 表 13 列 + download_tasks 表） |
+| 4 | Chrome profile 路径 | ✅ PASS（4 个 profile 路径均指向数据目录，按需创建） |
+| 5 | 日志生成 | ✅ PASS（probes/ 按需创建，路径正确） |
+
+**EXE 构建信息**：
+- 构建工具：PyInstaller 6.22.2
+- PySide6：6.11.2
+- EXE 大小：3.1 MB
+- 总体积：114.9 MB（含 _internal）
+- 构建时间：2026-09-04 23:37
+
+**结果：PASS** ✅
+
+---
+
 ## 后续建议
 
-1. **重新构建 EXE**：当前 EXE 仍为 FIX-EXE.1 前构建，需重新打包
-2. **端到端测试**：Phase 8-B 验证了模块完整性和单元测试，但未做实际 TikTok 网络端到端测试（受反爬限制）。建议在有登录态的环境下手动验证完整流程
-3. **长期运行验证**：建议在长时间运行（>1 小时）场景下验证 SQLite WAL checkpoint 和内存稳定性
+1. **端到端测试**：Phase 8-B 验证了模块完整性和单元测试 + EXE 环境启动，但未做实际 TikTok 网络端到端测试（受反爬限制）。建议在有登录态的环境下手动验证完整流程
+2. **长期运行验证**：建议在长时间运行（>1 小时）场景下验证 SQLite WAL checkpoint 和内存稳定性
