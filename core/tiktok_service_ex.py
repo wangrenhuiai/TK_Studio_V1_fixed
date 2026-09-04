@@ -1,4 +1,4 @@
-"""TikTok 解析服务增强层（Phase 7-A）。
+"""TikTok 解析服务增强层（Phase 7-A + 7-B.2）。
 
 在冻结的 ``core/tiktok_service.py`` 之上，新增结构化解析链路：
 
@@ -8,21 +8,29 @@
         ↓
     parser_ex.extract_tiktok_data_ex(html)  ← C1 JSON + 正则
         ↓
-    （字段缺失时）tiktok_service.parse_url(url)  ← 原 fallback（含 Chrome）
+    （字段缺失时）parser.extract_tiktok_data(html)  ← 复用已有 HTML，不重复 GET
+        ↓
+    （仍缺失时）chrome_bridge.load_with_chrome(url)  ← Chrome fallback
         ↓
     结构化作品数据
+
+Phase 7-B.2 改动：
+- 消除 parser_ex 失败后 _original_parse_url 对同一 URL 的重复 requests.get
+- 直接用 extract_tiktok_data(html) 复用已获取的 HTML
+- Chrome fallback 逻辑内联，保持与 tiktok_service.parse_url 一致的行为
 
 设计原则：
 - 不修改冻结的 ``core/tiktok_service.py`` / ``core/parser.py``
 - 保持 ``parse_url(url, log_callback)`` 签名完全兼容
-- 解析优先级：parser_ex JSON → 原 parser.py → Chrome fallback
-- 原 ``tiktok_service.parse_url`` 作为最终 fallback，保证不退化
+- 解析优先级：parser_ex JSON → 原 parser.py（复用 HTML） → Chrome fallback
+- 已获取的 HTML 不允许为 legacy parser 再次 GET
 """
 import re
 
 from core.tiktok_request import fetch_tiktok_html
 from core.parser_ex import extract_tiktok_data_ex
-from core.tiktok_service import parse_url as _original_parse_url
+from core.parser import extract_tiktok_data
+from core.chrome_bridge import load_with_chrome
 
 
 def parse_url_ex(url, log_callback=None):
@@ -74,24 +82,65 @@ def parse_url_ex(url, log_callback=None):
                 f"封面={'有' if result['cover_url'] else '无'}，"
                 f"视频地址={'有' if result['video_url'] else '无'}"
             )
+
+        # 4. Phase 7-B.2: 复用已有 HTML，用原 parser.py 补充缺失字段（不重复 GET）
+        if not result["title"] or not result["cover_url"] or not result["video_url"]:
+            if log_callback:
+                log_callback("字段缺失，复用已有 HTML 用原 parser 补充……")
+
+            legacy_data = extract_tiktok_data(html)
+            # 保守合并：只补充缺失字段，不覆盖已有值
+            if not result["author"] and legacy_data["author"]:
+                result["author"] = legacy_data["author"]
+            if not result["title"] and legacy_data["title"]:
+                result["title"] = legacy_data["title"]
+            if not result["cover_url"] and legacy_data["image"]:
+                result["cover_url"] = legacy_data["image"]
+            if not result["video_url"] and legacy_data["video_url"]:
+                result["video_url"] = legacy_data["video_url"]
+            if not result["duration"] and legacy_data["duration"]:
+                result["duration"] = legacy_data["duration"]
+            if not result["resolution"] and legacy_data["resolution"]:
+                result["resolution"] = legacy_data["resolution"]
+
+            if log_callback:
+                log_callback(
+                    f"原 parser 复用 HTML：标题={'有' if result['title'] else '无'}，"
+                    f"封面={'有' if result['cover_url'] else '无'}，"
+                    f"视频地址={'有' if result['video_url'] else '无'}"
+                )
     else:
         if log_callback:
-            log_callback("⚠️ Retry 请求未获取 HTML，回退到原解析链")
+            log_callback("⚠️ Retry 请求未获取 HTML")
 
-    # 4. 如果 parser_ex 结果不完整，调用原 parse_url（含 Chrome fallback）
+    # 5. Chrome fallback（保留：video_url 仍为空时触发，与 tiktok_service.parse_url 一致）
     if not result["title"] or not result["cover_url"] or not result["video_url"]:
         if log_callback:
-            log_callback("字段缺失，启用原解析链 fallback……")
+            log_callback("字段仍缺失，启用 Chrome fallback……")
 
-        try:
-            fallback = _original_parse_url(url, log_callback=log_callback)
-            # 只补充缺失字段（保守策略，不覆盖已有值）
-            for key in ("author", "title", "cover_url", "video_url", "duration", "resolution", "video_id"):
-                if not result.get(key) and fallback.get(key):
-                    result[key] = fallback[key]
-        except Exception as e:
+        rendered = load_with_chrome(url, log_callback=log_callback)
+        if rendered:
+            chrome_data = extract_tiktok_data(rendered)
+            # 保守合并：只补充缺失字段，不覆盖已有值（与原 parse_url_ex fallback 一致）
+            if not result["author"] and chrome_data["author"]:
+                result["author"] = chrome_data["author"]
+            if not result["title"] and chrome_data["title"]:
+                result["title"] = chrome_data["title"]
+            if not result["cover_url"] and chrome_data["image"]:
+                result["cover_url"] = chrome_data["image"]
+            if not result["video_url"] and chrome_data["video_url"]:
+                result["video_url"] = chrome_data["video_url"]
+            if not result["duration"] and chrome_data["duration"]:
+                result["duration"] = chrome_data["duration"]
+            if not result["resolution"] and chrome_data["resolution"]:
+                result["resolution"] = chrome_data["resolution"]
+
             if log_callback:
-                log_callback(f"⚠️ 原 fallback 失败：{e}")
+                log_callback(
+                    f"Chrome解析：标题={'有' if result['title'] else '无'}，"
+                    f"封面={'有' if result['cover_url'] else '无'}，"
+                    f"视频地址={'有' if result['video_url'] else '无'}"
+                )
 
     return result
 

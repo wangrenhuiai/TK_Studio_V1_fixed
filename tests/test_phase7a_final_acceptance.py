@@ -41,16 +41,18 @@ def test_case1_valid_result_success():
     logs = []
     with patch("core.tiktok_service_ex.fetch_tiktok_html",
                return_value=_HTML_WITH_FULL_DATA):
-        with patch("core.tiktok_service_ex._original_parse_url") as mock_fb:
-            result = parse_url_ex(
-                "https://www.tiktok.com/@user/video/7681265056633326878",
-                log_callback=lambda msg: logs.append(msg),
-            )
+        with patch("core.tiktok_service_ex.extract_tiktok_data") as mock_legacy:
+            with patch("core.tiktok_service_ex.load_with_chrome") as mock_chrome:
+                result = parse_url_ex(
+                    "https://www.tiktok.com/@user/video/7681265056633326878",
+                    log_callback=lambda msg: logs.append(msg),
+                )
     # video_url 有效 → 成功
     assert result["video_url"] != "", "有效页面应提取到 video_url"
     assert result["title"] == "Full Title"
-    # 字段完整时不应触发 fallback
-    mock_fb.assert_not_called()
+    # 字段完整时不应触发 legacy parser 或 Chrome
+    mock_legacy.assert_not_called()
+    mock_chrome.assert_not_called()
 
 
 # ─── Case 2: HTTP 200 但无数据 → 失败 ─────────────────────
@@ -58,19 +60,23 @@ def test_case1_valid_result_success():
 def test_case2_http200_no_data_failure():
     """Case 2: HTTP 200 但页面无 TikTok 数据 → video_url == "" → 失败。"""
     logs = []
+    _empty = {"author": "", "title": "", "image": "",
+              "video_url": "", "duration": "", "resolution": ""}
     # fetch_tiktok_html 返回风控页（HTTP 200 但无数据）
     with patch("core.tiktok_service_ex.fetch_tiktok_html",
                return_value=_HTML_EMPTY_RISK_CONTROL):
-        # fallback 也返回空（Chrome 也拿不到）
-        with patch("core.tiktok_service_ex._original_parse_url", return_value={
-            "video_id": "7681265056633326878", "author": "", "title": "",
-            "url": "", "video_url": "", "cover_url": "",
-            "duration": "", "resolution": ""
-        }):
-            result = parse_url_ex(
-                "https://www.tiktok.com/@user/video/7681265056633326878",
-                log_callback=lambda msg: logs.append(msg),
-            )
+        with patch("core.tiktok_service_ex.extract_tiktok_data_ex",
+                   return_value=_empty):
+            # legacy parser 也返回空
+            with patch("core.tiktok_service_ex.extract_tiktok_data",
+                       return_value=_empty):
+                # Chrome 也拿不到
+                with patch("core.tiktok_service_ex.load_with_chrome",
+                           return_value=""):
+                    result = parse_url_ex(
+                        "https://www.tiktok.com/@user/video/7681265056633326878",
+                        log_callback=lambda msg: logs.append(msg),
+                    )
     # video_url 为空 → 判定为失败（不是成功）
     assert result["video_url"] == "", "风控页不应提取到 video_url"
     assert result["title"] == ""
@@ -79,58 +85,67 @@ def test_case2_http200_no_data_failure():
     assert success is False, "HTTP 200 但 video_url 为空必须判定为失败"
 
 
-# ─── Case 3: parser_ex 失败但原 parser 成功 ───────────────
+# ─── Case 3: parser_ex 失败但 legacy parser 复用 HTML 成功 ──
 
 def test_case3_parser_ex_fail_original_success():
-    """Case 3: parser_ex 无结果但原 parse_url fallback 成功。"""
+    """Case 3: parser_ex 无结果但 legacy parser 从同一 HTML 成功。"""
     logs = []
-    fallback_result = {
-        "video_id": "123", "author": "fb_user", "title": "FB Title",
-        "url": "https://www.tiktok.com/@user/video/123",
+    _empty = {"author": "", "title": "", "image": "",
+              "video_url": "", "duration": "", "resolution": ""}
+    legacy_result = {
+        "author": "fb_user", "title": "FB Title",
+        "image": "https://example.com/fb_cover.jpg",
         "video_url": "https://example.com/fb_video.mp4",
-        "cover_url": "https://example.com/fb_cover.jpg",
         "duration": "30", "resolution": "1080x1920"
     }
-    # parser_ex 拿到空 HTML（无数据）
     with patch("core.tiktok_service_ex.fetch_tiktok_html",
                return_value=_HTML_EMPTY_RISK_CONTROL):
-        with patch("core.tiktok_service_ex._original_parse_url",
-                   return_value=fallback_result) as mock_fb:
-            result = parse_url_ex(
-                "https://www.tiktok.com/@user/video/123",
-                log_callback=lambda msg: logs.append(msg),
-            )
-    # fallback 补充了 video_url → 成功
+        # parser_ex 返回空
+        with patch("core.tiktok_service_ex.extract_tiktok_data_ex",
+                   return_value=_empty):
+            # legacy parser 从同一 HTML 提取到数据
+            with patch("core.tiktok_service_ex.extract_tiktok_data",
+                       return_value=legacy_result) as mock_legacy:
+                with patch("core.tiktok_service_ex.load_with_chrome") as mock_chrome:
+                    result = parse_url_ex(
+                        "https://www.tiktok.com/@user/video/123",
+                        log_callback=lambda msg: logs.append(msg),
+                    )
+    # legacy parser 补充了 video_url → 成功
     assert result["video_url"] == "https://example.com/fb_video.mp4"
     assert result["title"] == "FB Title"
-    mock_fb.assert_called_once()
+    mock_legacy.assert_called_once()
+    # Chrome 不应触发（legacy parser 已补全）
+    mock_chrome.assert_not_called()
 
 
 # ─── Case 4: requests/parser 失败但 Chrome 成功 ───────────
 
 def test_case4_chrome_fallback_success():
-    """Case 4: requests + parser_ex 都失败，Chrome fallback 成功。
-
-    Chrome fallback 在 _original_parse_url 内部触发，这里通过
-    mock _original_parse_url 返回 Chrome 提取的结果来验证链路。
-    """
+    """Case 4: requests + parser_ex + legacy 都失败，Chrome fallback 成功。"""
     logs = []
-    # 模拟 Chrome fallback 成功提取的结果
+    _empty = {"author": "", "title": "", "image": "",
+              "video_url": "", "duration": "", "resolution": ""}
     chrome_result = {
-        "video_id": "123", "author": "chrome_user", "title": "Chrome Title",
-        "url": "https://www.tiktok.com/@user/video/123",
+        "author": "chrome_user", "title": "Chrome Title",
+        "image": "https://example.com/chrome_cover.jpg",
         "video_url": "https://example.com/chrome_video.mp4",
-        "cover_url": "https://example.com/chrome_cover.jpg",
         "duration": "60", "resolution": "720x1280"
     }
+    _chrome_html = '<html><meta property="og:title" content="Chrome Title"></html>'
     with patch("core.tiktok_service_ex.fetch_tiktok_html",
                return_value=_HTML_EMPTY_RISK_CONTROL):
-        with patch("core.tiktok_service_ex._original_parse_url",
-                   return_value=chrome_result):
-            result = parse_url_ex(
-                "https://www.tiktok.com/@user/video/123",
-                log_callback=lambda msg: logs.append(msg),
-            )
+        with patch("core.tiktok_service_ex.extract_tiktok_data_ex",
+                   return_value=_empty):
+            # extract_tiktok_data: legacy 空 + Chrome 数据
+            with patch("core.tiktok_service_ex.extract_tiktok_data",
+                       side_effect=[_empty, chrome_result]):
+                with patch("core.tiktok_service_ex.load_with_chrome",
+                           return_value=_chrome_html):
+                    result = parse_url_ex(
+                        "https://www.tiktok.com/@user/video/123",
+                        log_callback=lambda msg: logs.append(msg),
+                    )
     # Chrome fallback 成功
     assert result["video_url"] == "https://example.com/chrome_video.mp4"
     assert result["title"] == "Chrome Title"
@@ -141,16 +156,12 @@ def test_case4_chrome_fallback_success():
 # ─── Case 5: 全部失败 → 最终失败 ──────────────────────────
 
 def test_case5_all_fail_final_failure():
-    """Case 5: requests + parser_ex + Chrome 全部失败 → 最终失败。"""
+    """Case 5: requests + parser_ex + legacy + Chrome 全部失败 → 最终失败。"""
     logs = []
     # fetch_tiktok_html 返回空（网络失败）
     with patch("core.tiktok_service_ex.fetch_tiktok_html", return_value=""):
-        # _original_parse_url（含 Chrome）也返回空
-        with patch("core.tiktok_service_ex._original_parse_url", return_value={
-            "video_id": "123", "author": "", "title": "",
-            "url": "", "video_url": "", "cover_url": "",
-            "duration": "", "resolution": ""
-        }):
+        # Chrome 也返回空
+        with patch("core.tiktok_service_ex.load_with_chrome", return_value=""):
             result = parse_url_ex(
                 "https://www.tiktok.com/@user/video/123",
                 log_callback=lambda msg: logs.append(msg),
@@ -265,25 +276,30 @@ def test_parse_worker_success_flag_false_when_no_video_url():
 def test_merge_empty_does_not_overwrite_valid():
     """空字符串不能覆盖有效值（保守合并）。"""
     logs = []
-    # parser_ex 提取到 video_url
+    # parser_ex 从 meta 提取到 video_url
     html_with_video = (
         '<html><head>'
         '<meta property="og:video" content="https://example.com/orig.mp4">'
         '</head></html>'
     )
-    # fallback 返回空 video_url（不应覆盖）
+    # legacy parser 返回空 video_url + fb_cover（不应覆盖 video_url）
     with patch("core.tiktok_service_ex.fetch_tiktok_html",
                return_value=html_with_video):
-        with patch("core.tiktok_service_ex._original_parse_url", return_value={
-            "video_id": "123", "author": "", "title": "",
-            "url": "", "video_url": "",  # ← 空，不应覆盖
-            "cover_url": "fb_cover", "duration": "", "resolution": ""
-        }):
-            result = parse_url_ex(
-                "https://www.tiktok.com/@user/video/123",
-                log_callback=lambda msg: logs.append(msg),
-            )
+        # 不 patch extract_tiktok_data_ex → 自然解析 meta → video_url=orig.mp4
+        with patch("core.tiktok_service_ex.extract_tiktok_data",
+                   return_value={
+                       "author": "", "title": "",
+                       "image": "fb_cover",
+                       "video_url": "",  # ← 空，不应覆盖
+                       "duration": "", "resolution": ""
+                   }):
+            with patch("core.tiktok_service_ex.load_with_chrome",
+                       return_value=""):
+                result = parse_url_ex(
+                    "https://www.tiktok.com/@user/video/123",
+                    log_callback=lambda msg: logs.append(msg),
+                )
     # video_url 应保持 parser_ex 的有效值
     assert result["video_url"] == "https://example.com/orig.mp4"
-    # cover_url 从 fallback 补充
+    # cover_url 从 legacy parser 补充
     assert result["cover_url"] == "fb_cover"
