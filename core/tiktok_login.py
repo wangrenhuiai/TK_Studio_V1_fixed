@@ -128,7 +128,7 @@ class TikTokLogin:
 
         try:
             self._proc, self._ws, self._cdp, self._port = self._start_visible_chrome(
-                chrome_path, LOGIN_PROFILE_DIR
+                chrome_path, LOGIN_PROFILE_DIR, startup_url=TIKTOK_LOGIN_URL
             )
             self._active = True
 
@@ -278,12 +278,16 @@ class TikTokLogin:
     # 内部实现
     # ------------------------------------------------------------------
 
-    def _start_visible_chrome(self, chrome_path, profile_dir):
+    def _start_visible_chrome(self, chrome_path, profile_dir,
+                              startup_url="about:blank"):
         """启动可见 Chrome（无 --headless），返回 (proc, ws, cdp_func, port)。
 
         用户可看到 Chrome 窗口，用于扫码登录。
+        FIX-A.3-2：启动 URL 直接使用登录页（替代 about:blank），
+        使正确的页面 target 从启动即存在。
         """
-        return self._start_chrome(chrome_path, profile_dir, headless=False)
+        return self._start_chrome(chrome_path, profile_dir, headless=False,
+                                  startup_url=startup_url)
 
     def _start_headless_chrome(self, chrome_path, profile_dir):
         """启动 headless Chrome，返回 (proc, ws, cdp_func, port)。
@@ -292,11 +296,19 @@ class TikTokLogin:
         """
         return self._start_chrome(chrome_path, profile_dir, headless=True)
 
-    def _start_chrome(self, chrome_path, profile_dir, headless=True):
+    def _start_chrome(self, chrome_path, profile_dir, headless=True,
+                      startup_url="about:blank"):
         """启动 Chrome + CDP 会话。
 
         复用 chrome_bridge.py 的端口扫描和 CDP 连接模式，
         但使用独立 LOGIN_PROFILE_DIR，且可选择 headless/visible。
+
+        FIX-A.3-2：CDP target 不再盲选 /json 的 pages[0]。非 headless Chrome
+        会加载组件扩展，pages[0] 可能是 chrome-extension:// 后台页，导致
+        Page.navigate 导航失败、可见标签页停在 about:blank、二维码不显示。
+        现按 type=="page" 过滤，优先 http(s) 页面，再优先 tiktok.com 页面；
+        无 http 页面时（headless 启动于 about:blank）回退首个 page target，
+        保持 check_existing_login 原行为。
         """
         # 端口扫描：9222-9231
         port = None
@@ -333,7 +345,8 @@ class TikTokLogin:
         else:
             # 可见窗口时不要 CREATE_NO_WINDOW（否则窗口不显示）
             creationflags = 0
-        cmd.append("about:blank")
+        # FIX-A.3-2：可见登录会话的启动 URL 直接使用登录页
+        cmd.append(startup_url)
 
         proc = subprocess.Popen(
             cmd,
@@ -349,6 +362,7 @@ class TikTokLogin:
         # 因此 return 前的任何异常都必须先回收 Chrome 进程，再向上传递原异常。
         try:
             # 等待 CDP endpoint 就绪
+            # FIX-A.3-2：按 target 类型与 URL 过滤，避免连到扩展后台页
             endpoint = None
             for _ in range(50):
                 try:
@@ -356,10 +370,22 @@ class TikTokLogin:
                         f"http://127.0.0.1:{port}/json", timeout=0.5
                     ) as resp:
                         pages = json.loads(resp.read().decode("utf-8", "ignore"))
-                    if pages:
-                        endpoint = pages[0].get("webSocketDebuggerUrl")
-                        if endpoint:
-                            break
+                    page_targets = [
+                        p for p in pages if p.get("type") == "page"
+                    ]
+                    http_pages = [
+                        p for p in page_targets
+                        if str(p.get("url") or "").startswith("http")
+                    ]
+                    pool = http_pages or page_targets or pages
+                    tiktok_pages = [
+                        p for p in pool
+                        if "tiktok.com" in (p.get("url") or "")
+                    ]
+                    chosen = (tiktok_pages or pool)[0]
+                    endpoint = chosen.get("webSocketDebuggerUrl")
+                    if endpoint:
+                        break
                 except Exception:
                     pass
                 time.sleep(0.2)
